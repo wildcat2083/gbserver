@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<title>Headless Game Boy</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v={{ asset_version('style.css') }}" />
+</head>
+<body data-room="{{ room_code or '' }}" data-room-missing="{{ 'true' if room_missing else 'false' }}" data-shared-disabled="{{ 'true' if shared_disabled else 'false' }}">
+  <div id="roomMissingBanner" class="room-missing-banner" hidden>
+    <div class="room-missing-card">
+      <h2>Room not found</h2>
+      <p>This session link doesn't exist or has expired.</p>
+      <a class="cart-btn" href="/">Go to the shared game</a>
+    </div>
+  </div>
+  <div id="sharedDisabledBanner" class="room-missing-banner" hidden>
+    <div class="room-missing-card">
+      <h2>Shared game unavailable</h2>
+      <p>The shared game has been turned off for now. You can still start your own private room.</p>
+      <button type="button" class="cart-btn" id="sharedDisabledCreateRoomBtn">Create a private room</button>
+    </div>
+  </div>
+
+  <div class="shell">
+    <header class="brand">
+      <div class="brand-text">
+        <span class="brand-mark">PY</span>
+        <span class="brand-name">GAME BOY</span>
+      </div>
+      <button type="button" id="helpBtn" class="settings-btn" aria-label="Help" aria-expanded="false" aria-controls="helpPanel">&#8505;</button>
+      <button type="button" id="chatBtn" class="settings-btn" aria-label="Chat" aria-expanded="false" aria-controls="chatPanel">&#128172;</button>
+      <button type="button" id="settingsBtn" class="settings-btn" aria-label="Settings" aria-expanded="false" aria-controls="settingsPanel">&#9881;</button>
+    </header>
+
+    <div class="screen-bezel">
+      <div class="screen-meta">
+        <span class="dot"></span>
+        <span id="status">Not connected</span>
+        <span id="audioBadge" class="control-badge" hidden>No audio (boytacean)</span>
+        <span id="viewerCountBadge" class="control-badge" hidden></span>
+        <span id="controlBadge" class="control-badge" hidden></span>
+        <button type="button" id="requestControlBtn" class="control-action-btn" hidden>Request control</button>
+        <button type="button" id="grantControlBtn" class="control-action-btn grant" hidden>Someone wants control &middot; Grant</button>
+      </div>
+      <div class="screen-wrap">
+        <canvas id="screen" width="160" height="144" aria-label="Game Boy screen"></canvas>
+        <canvas id="screenGL" width="160" height="144" aria-label="Game Boy screen (filtered)" hidden></canvas>
+        <div id="connectGate" class="connect-gate">
+          <button type="button" id="connectBtn" class="connect-btn">&#9654; Tap to connect</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="emulator-controls">
+      <button type="button" id="fastForwardBtn" class="ff-btn" aria-pressed="false">&#9193; Fast forward (4x)</button>
+      <button type="button" id="resetBtn" class="ff-btn reset-btn">&#8635; Reset</button>
+      <button type="button" id="muteBtn" class="ff-btn" aria-pressed="false">&#128266; Mute</button>
+    </div>
+
+    <p id="waitingForControlNotice" class="waiting-notice" hidden>Someone else is playing &mdash; control passes to you automatically if they're inactive.</p>
+
+    <div class="controls">
+      <div class="dpad" id="dpad">
+        <button type="button" class="btn dpad-btn" data-btn="up" data-pos="2" aria-label="Up">&#9650;</button>
+        <button type="button" class="btn dpad-btn" data-btn="left" data-pos="1" aria-label="Left">&#9664;</button>
+        <button type="button" class="btn dpad-btn" data-btn="right" data-pos="0" aria-label="Right">&#9654;</button>
+        <button type="button" class="btn dpad-btn" data-btn="down" data-pos="3" aria-label="Down">&#9660;</button>
+      </div>
+
+      <div class="face-buttons">
+        <button type="button" class="btn face-btn" data-btn="b" aria-label="B"><span>B</span></button>
+        <button type="button" class="btn face-btn" data-btn="a" aria-label="A"><span>A</span></button>
+      </div>
+    </div>
+
+    <div class="system-buttons">
+      <button type="button" class="btn sys-btn" data-btn="select" aria-label="Select">SELECT</button>
+      <button type="button" class="btn sys-btn" data-btn="start" aria-label="Start">START</button>
+    </div>
+
+    <p class="hint">Tap once for audio &middot; Double-click screen for fullscreen &middot; Keyboard: arrows / Z X Enter Shift</p>
+  </div>
+
+  <div id="helpBackdrop" class="settings-backdrop" hidden></div>
+  <aside id="helpPanel" class="settings-panel" hidden aria-label="Help">
+    <div class="settings-header">
+      <h2>How to play</h2>
+      <button type="button" id="helpClose" class="settings-close" aria-label="Close help">&#10005;</button>
+    </div>
+    <div class="help-body">
+      <section class="help-section">
+        <h3>Controls</h3>
+        <ul>
+          <li>D-pad, A, B, Start, Select - tap on screen, or use a keyboard/gamepad below</li>
+          <li>Keyboard: Arrow keys, Z/A = A, X/B = B, Enter/W = Start, Shift/Q = Select</li>
+          <li>Gamepad: face buttons and d-pad map automatically once connected over Bluetooth/USB</li>
+          <li>Gamepad: press Y / Triangle to open or close this settings menu, then use the D-pad, A, and B to navigate it - the D-pad drives real game input again once the menu is closed</li>
+          <li>Gamepad: hold X / Square for rapid-fire A - repeatedly presses and releases A on its own while held, for games that need many quick taps in a row</li>
+        </ul>
+      </section>
+      <section class="help-section">
+        <h3>Fast forward</h3>
+        <ul>
+          <li>Toggle button above the D-pad, or press F1 on a keyboard</li>
+          <li>On a gamepad: RB / R1</li>
+          <li>Audio is muted while fast-forwarding - this is expected, not a bug</li>
+        </ul>
+      </section>
+      <section class="help-section">
+        <h3>Reset</h3>
+        <ul>
+          <li>Restarts the current ROM completely fresh, like pressing reset on real hardware</li>
+          <li>Press the Reset button, or the * key on a keyboard (same as BGB)</li>
+          <li>On a gamepad: LB / L1</li>
+          <li>Doesn't touch your save file - only in-progress play since the ROM was last loaded is lost</li>
+        </ul>
+      </section>
+      <section class="help-section">
+        <h3>Being in control</h3>
+        <ul>
+          <li>Whoever connects first becomes the controller - everyone else is a viewer</li>
+          <li>If the controller disconnects, the next person who joined automatically takes over</li>
+          <li>Viewers can still watch, chat, and use fullscreen - just not send button input</li>
+        </ul>
+      </section>
+      <section class="help-section">
+        <h3>Saving</h3>
+        <ul>
+          <li>The game autosaves in the background every few minutes</li>
+          <li>"Save now" (in Settings) saves immediately, on demand</li>
+          <li>"Play selected" always starts a ROM fresh - "Resume save" explicitly loads its existing save instead</li>
+          <li>Stopping the game also saves automatically before it closes</li>
+          <li>Click "Stop emulation" before closing the browser tab, so that save actually happens</li>
+        </ul>
+      </section>
+      <section class="help-section">
+        <h3>Other things worth knowing</h3>
+        <ul>
+          <li>Double-click the screen to go fullscreen</li>
+          <li>Private rooms (in Settings) give you a separate game and chat, on their own link, that only people you share it with can join</li>
+          <li>An idle private room is cleared out automatically after a while - the shared game stays around, but stops itself if everyone leaves</li>
+        </ul>
+      </section>
+    </div>
+  </aside>
+
+  <div id="chatBackdrop" class="settings-backdrop" hidden></div>
+  <aside id="chatPanel" class="settings-panel" hidden aria-label="Chat">
+    <div class="settings-header">
+      <h2>Chat</h2>
+      <button type="button" id="chatClose" class="settings-close" aria-label="Close chat">&#10005;</button>
+    </div>
+    <div class="chat-body">
+      <input type="text" id="chatNameInput" class="chat-name-input" placeholder="Your name (optional)" maxlength="24" autocomplete="off" />
+      <div id="chatMessages" class="chat-messages"></div>
+      <form id="chatForm" class="chat-form">
+        <input type="text" id="chatInput" class="chat-input" placeholder="Say something&hellip;" maxlength="200" autocomplete="off" />
+        <button type="submit" class="cart-btn secondary">Send</button>
+      </form>
+    </div>
+  </aside>
+
+  <div id="settingsBackdrop" class="settings-backdrop" hidden></div>
+  <aside id="settingsPanel" class="settings-panel" hidden aria-label="Settings">
+    <div class="settings-header">
+      <h2>Settings</h2>
+      <button type="button" id="settingsClose" class="settings-close" aria-label="Close settings">&#10005;</button>
+    </div>
+
+    <p id="viewerNotice" class="setting-help viewer-notice" hidden>Viewing only &mdash; only the controller can play/stop, manage saves, or delete ROMs. If they're inactive, control passes to you automatically.</p>
+
+    <section class="settings-section" id="sessionSection">
+      {% if room_code %}
+      <h3>Private session</h3>
+      <div class="setting-row">
+        <div class="setting-row-top">
+          <span>Room code</span>
+          <strong id="roomCodeText">{{ room_code }}</strong>
+        </div>
+        <div class="btn-row" style="margin-top: 8px">
+          <button type="button" id="copyLinkBtn" class="cart-btn secondary">Copy link to share</button>
+          <a class="cart-btn" href="/">Back to shared game</a>
+        </div>
+        <p class="setting-help">Anyone with this link plays this exact session with you &mdash; it's separate from the shared game.</p>
+      </div>
+      {% else %}
+      <h3>Private session</h3>
+      <p class="setting-help">Start your own separate game &mdash; play solo or share the link with someone else.</p>
+      <div class="btn-row">
+        <button type="button" id="createRoomBtn" class="cart-btn secondary">Start private session</button>
+      </div>
+      <p id="createRoomMsg" class="upload-msg"></p>
+      {% endif %}
+    </section>
+
+    <section class="settings-section">
+      <h3>Controls</h3>
+      <label class="toggle-row">
+        <span>Button haptics</span>
+        <input id="hapticToggle" type="checkbox" checked />
+      </label>
+      <p class="setting-help">Short tap vibrate on press (Android / supported browsers)</p>
+    </section>
+
+    <section class="settings-section">
+      <h3>Display</h3>
+      <div class="setting-row">
+        <div class="setting-row-top">
+          <span>Color palette</span>
+        </div>
+        <select id="themeSelect" class="engine-select">
+          <option value="dmg">DMG Grey (default)</option>
+          <option value="pocket">Pocket Silver</option>
+          <option value="grape">GBC Grape</option>
+          <option value="light-yellow">GB Light Yellow</option>
+          <option value="dark">Dark</option>
+        </select>
+        <p class="setting-help">Changes the color scheme of this page's shell - the D-pad, buttons, panels, and so on. Doesn't affect the game itself, which always renders in its own real colors.</p>
+      </div>
+      <div class="setting-row">
+        <div class="setting-row-top">
+          <span>Video filter</span>
+        </div>
+        <select id="filterSelect" class="engine-select">
+          <option value="off">Off (crisp pixels)</option>
+          <option value="smooth">Smooth (bilinear)</option>
+          <option value="smart">Smart smooth (edge-aware)</option>
+        </select>
+        <p class="setting-help">Smart smooth softens diagonal lines and curves while keeping flat areas and strong edges crisp - unlike Smooth, which blurs everything evenly.</p>
+      </div>
+      <div class="setting-row">
+        <div class="setting-row-top">
+          <span>Smoothness</span>
+          <strong id="smoothnessValue">2.0</strong>
+        </div>
+        <input id="smoothnessRange" type="range" min="0" max="10" step="0.1" value="2.0" />
+        <p class="setting-help">Only affects Smart smooth - higher softens diagonal edges more aggressively; 0 disables the directional smoothing entirely.</p>
+      </div>
+    </section>
+
+    <section class="settings-section">
+      <h3>Audio buffer</h3>
+      <div class="setting-row">
+        <div class="setting-row-top">
+          <span>Batch size</span>
+          <strong id="bufferValue">67 ms</strong>
+        </div>
+        <input id="bufferRange" type="range" min="1" max="20" step="1" value="4" />
+        <p class="setting-help">Lower = snappier audio, more risk of clicking &middot; Higher = smoother, a bit more lag</p>
+      </div>
+    </section>
+
+    <section class="settings-section">
+      <h3>ROM library</h3>
+      <div class="storage-meter">
+        <div class="setting-row-top">
+          <span>Library size</span>
+          <strong id="storageText">&mdash;</strong>
+        </div>
+        <p id="storageDetail" class="setting-help"></p>
+      </div>
+
+      <div class="cart-info" style="margin: 12px 0 8px">
+        <span class="cart-label">NOW PLAYING</span>
+        <span id="romName">No ROM loaded</span>
+      </div>
+
+      <input id="romSearch" type="text" class="rom-search" placeholder="Search library&hellip;" autocomplete="off" />
+      <select id="romSelect" class="rom-select"></select>
+      <div class="btn-row" style="margin-top: 8px">
+        <button type="button" id="romPlayBtn" class="cart-btn secondary">Play selected</button>
+        <button type="button" id="romResumeBtn" class="cart-btn secondary">Resume save</button>
+        <button type="button" id="romDeleteBtn" class="cart-btn danger">Delete selected</button>
+      </div>
+
+      <div id="engineRow" class="engine-row" hidden>
+        <label for="engineSelect" class="engine-row-label">Engine for selected ROM</label>
+        <select id="engineSelect" class="engine-select">
+          <option value="pyboy">PyBoy (default, has audio)</option>
+          <option value="boytacean">boytacean (video only, no audio)</option>
+        </select>
+        <p class="setting-help">Takes effect the next time this ROM is loaded.</p>
+      </div>
+
+      <label class="cart-btn" for="romFile" tabindex="0">Add ROM to library</label>
+      <input id="romFile" type="file" accept=".gb,.GB,.gbc,.GBC,application/octet-stream" hidden />
+      <div class="progress-track" aria-hidden="true">
+        <div id="uploadBar" class="progress-bar"></div>
+      </div>
+      <p id="uploadMsg" class="upload-msg"></p>
+    </section>
+
+    <section class="settings-section">
+      <h3>Save data</h3>
+      <p id="saveInfo" class="setting-help">No save for the current ROM yet.</p>
+      <div class="btn-row">
+        <button type="button" id="saveNow" class="cart-btn secondary">Save now</button>
+        <button type="button" id="saveDownload" class="cart-btn secondary">Download .state</button>
+        <label class="cart-btn secondary" for="saveFile" tabindex="0">Upload .state</label>
+        <input id="saveFile" type="file" accept=".state,application/octet-stream" hidden />
+        <button type="button" id="saveDelete" class="cart-btn danger">Delete save</button>
+      </div>
+      <p id="saveMsg" class="upload-msg"></p>
+    </section>
+
+    <section class="settings-section">
+      <h3>Server</h3>
+      <p class="setting-help">Stop emulation. The library and save data stay put &mdash; pick a ROM again to resume.</p>
+      <div class="btn-row">
+        <button type="button" id="stopBtn" class="cart-btn secondary">Stop emulation</button>
+      </div>
+      <p id="stopMsg" class="upload-msg"></p>
+    </section>
+  </aside>
+
+  <div id="vkeyboardBackdrop" class="settings-backdrop" hidden></div>
+  <aside id="vkeyboard" class="vkeyboard" hidden aria-label="On-screen keyboard">
+    <div class="vkeyboard-preview" id="vkeyboardPreview"></div>
+    <div class="vkeyboard-grid" id="vkeyboardGrid">
+      <div class="vkeyboard-row">
+        <button type="button" class="vkey" data-row="0" data-col="0">1</button>
+        <button type="button" class="vkey" data-row="0" data-col="1">2</button>
+        <button type="button" class="vkey" data-row="0" data-col="2">3</button>
+        <button type="button" class="vkey" data-row="0" data-col="3">4</button>
+        <button type="button" class="vkey" data-row="0" data-col="4">5</button>
+        <button type="button" class="vkey" data-row="0" data-col="5">6</button>
+        <button type="button" class="vkey" data-row="0" data-col="6">7</button>
+        <button type="button" class="vkey" data-row="0" data-col="7">8</button>
+        <button type="button" class="vkey" data-row="0" data-col="8">9</button>
+        <button type="button" class="vkey" data-row="0" data-col="9">0</button>
+      </div>
+      <div class="vkeyboard-row">
+        <button type="button" class="vkey" data-row="1" data-col="0">Q</button>
+        <button type="button" class="vkey" data-row="1" data-col="1">W</button>
+        <button type="button" class="vkey" data-row="1" data-col="2">E</button>
+        <button type="button" class="vkey" data-row="1" data-col="3">R</button>
+        <button type="button" class="vkey" data-row="1" data-col="4">T</button>
+        <button type="button" class="vkey" data-row="1" data-col="5">Y</button>
+        <button type="button" class="vkey" data-row="1" data-col="6">U</button>
+        <button type="button" class="vkey" data-row="1" data-col="7">I</button>
+        <button type="button" class="vkey" data-row="1" data-col="8">O</button>
+        <button type="button" class="vkey" data-row="1" data-col="9">P</button>
+      </div>
+      <div class="vkeyboard-row">
+        <button type="button" class="vkey" data-row="2" data-col="0">A</button>
+        <button type="button" class="vkey" data-row="2" data-col="1">S</button>
+        <button type="button" class="vkey" data-row="2" data-col="2">D</button>
+        <button type="button" class="vkey" data-row="2" data-col="3">F</button>
+        <button type="button" class="vkey" data-row="2" data-col="4">G</button>
+        <button type="button" class="vkey" data-row="2" data-col="5">H</button>
+        <button type="button" class="vkey" data-row="2" data-col="6">J</button>
+        <button type="button" class="vkey" data-row="2" data-col="7">K</button>
+        <button type="button" class="vkey" data-row="2" data-col="8">L</button>
+      </div>
+      <div class="vkeyboard-row">
+        <button type="button" class="vkey" data-row="3" data-col="0">Z</button>
+        <button type="button" class="vkey" data-row="3" data-col="1">X</button>
+        <button type="button" class="vkey" data-row="3" data-col="2">C</button>
+        <button type="button" class="vkey" data-row="3" data-col="3">V</button>
+        <button type="button" class="vkey" data-row="3" data-col="4">B</button>
+        <button type="button" class="vkey" data-row="3" data-col="5">N</button>
+        <button type="button" class="vkey" data-row="3" data-col="6">M</button>
+      </div>
+      <div class="vkeyboard-row">
+        <button type="button" class="vkey vkey-wide" data-row="4" data-col="0" data-action="space">Space</button>
+        <button type="button" class="vkey vkey-wide" data-row="4" data-col="1" data-action="backspace">&#9003; Delete</button>
+        <button type="button" class="vkey vkey-wide vkey-done" data-row="4" data-col="2" data-action="done">&#10003; Done</button>
+      </div>
+    </div>
+    <p class="vkeyboard-help">Gamepad: D-pad to move, A to press a key, B to close</p>
+  </aside>
+
+  <script src="{{ url_for('static', filename='app.js') }}?v={{ asset_version('app.js') }}"></script>
+</body>
+</html>

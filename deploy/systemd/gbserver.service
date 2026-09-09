@@ -1,0 +1,35 @@
+# /etc/systemd/system/gbserver.service
+#
+# Runs the headless Game Boy server via gunicorn, listening on
+# 127.0.0.1:8080 (nginx handles the public-facing side — see
+# deploy/nginx/gbserver.conf).
+#
+# Install:
+#   sudo cp deploy/systemd/gbserver.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now gbserver
+#
+# Logs:
+#   journalctl -u gbserver -f
+
+[Unit]
+Description=Headless Game Boy server (gunicorn)
+After=network.target
+
+[Service]
+# Adjust User/WorkingDirectory/ExecStart to match where you deployed this
+User=changeme
+WorkingDirectory=/home/changeme/gbserver
+ExecStart=/home/changeme/gbserver/venv/bin/gunicorn -c gunicorn.conf.py app:app
+Restart=on-failure
+RestartSec=3
+
+# PyBoy/SDL2 doesn't need a real display since we run window="null",
+# but some environments still expect these to be set harmlessly.
+Environment=SDL_VIDEODRIVER=dummy
+Environment=SDL_AUDIODRIVER=dummy
+Environment=GBSERVER_ADMIN_TOKEN=changeme
+Environment=GBSERVER_MAX_ROOMS=20
+
+[Install]
+WantedBy=multi-user.target
