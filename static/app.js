@@ -904,6 +904,14 @@
       btn.classList.add("pressed");
       hapticTap();
       sendInput("press", btn.dataset.btn);
+      // Feeds the same Konami-code buffer the keyboard and gamepad paths
+      // already feed (see feedKonamiBuffer below) - data-btn's values
+      // ("up"/"down"/"left"/"right"/"a"/"b") already match what that
+      // buffer expects exactly, so no translation needed. This runs
+      // regardless of whether a game is even loaded, matching the other
+      // two input paths - the code can be tapped out on the on-screen
+      // D-pad/A/B at any time.
+      feedKonamiBuffer(btn.dataset.btn);
     }
 
     function releaseButton(btn) {
