@@ -18,9 +18,9 @@ After=network.target
 
 [Service]
 # Adjust User/WorkingDirectory/ExecStart to match where you deployed this
-User=changeme
-WorkingDirectory=/home/changeme/gbserver
-ExecStart=/home/changeme/gbserver/venv/bin/gunicorn -c gunicorn.conf.py app:app
+User=luna
+WorkingDirectory=/home/luna/gbserver
+ExecStart=/home/luna/gbserver/venv/bin/gunicorn -c gunicorn.conf.py app:app
 Restart=on-failure
 RestartSec=3
 
@@ -28,7 +28,7 @@ RestartSec=3
 # but some environments still expect these to be set harmlessly.
 Environment=SDL_VIDEODRIVER=dummy
 Environment=SDL_AUDIODRIVER=dummy
-Environment=GBSERVER_ADMIN_TOKEN=changeme
+Environment=GBSERVER_ADMIN_TOKEN=
 Environment=GBSERVER_MAX_ROOMS=20
 
 [Install]

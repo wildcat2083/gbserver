@@ -210,6 +210,70 @@ def api_reset(room_code=None):
     return jsonify({"ok": True})
 
 
+def _parse_gameshark_code(code_str):
+    """Parses a single GameShark (original Game Boy) cheat code into an
+    {"address": int, "value": int} dict.
+
+    Format: 8 hex characters, TTVVAAAA -
+      TT   - type/bank byte, not currently used/validated here - the vast
+             majority of real GB GameShark codes use 01, a plain RAM write
+      VV   - the value to write (1 byte)
+      AAAA - the target address, stored LOW BYTE FIRST in the code string
+             (e.g. "41D2" in the code means address bytes [0x41, 0xD2],
+             which as a 16-bit address is 0xD241) - checked against a
+             known, widely-documented code (Pokemon Red's "Infinite
+             Master Balls", 01FF41D2, targets the well-documented WRAM
+             item-slot address 0xD241, confirming this byte order).
+
+    Raises ValueError with a clear, specific message on anything
+    malformed, rather than silently accepting garbage that would end up
+    writing to the wrong address entirely.
+    """
+    original = code_str
+    code_str = code_str.strip().upper()
+    if len(code_str) != 8 or not all(c in "0123456789ABCDEF" for c in code_str):
+        raise ValueError(f'"{original}" is not a valid 8-character hex GameShark code')
+
+    value = int(code_str[2:4], 16)
+    addr_low = int(code_str[4:6], 16)
+    addr_high = int(code_str[6:8], 16)
+    address = (addr_high << 8) | addr_low
+
+    return {"address": address, "value": value}
+
+
+@app.route("/api/cheats", methods=["POST"])
+@app.route("/r/<room_code>/api/cheats", methods=["POST"])
+@limiter.limit("30 per minute")
+def api_cheats(room_code=None):
+    """Replaces the ENTIRE active cheat list wholesale with whatever's in
+    this request - not an incremental add/remove. The client is expected
+    to send its full current list every time (add one, remove one,
+    whatever the UI did locally), which keeps this route - and
+    do_set_cheats on the worker side - simple, stateless reassignment
+    rather than needing to track a diff."""
+    emu = get_emulator_or_404(room_code)
+    denied = controller_check(emu)
+    if denied:
+        return denied
+    data = request.get_json(force=True) or {}
+    raw_codes = data.get("codes", [])
+    if not isinstance(raw_codes, list):
+        return jsonify({"error": "codes must be a list of code strings"}), 400
+    parsed = []
+    for raw in raw_codes:
+        try:
+            parsed.append(_parse_gameshark_code(raw))
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+    emu.set_cheats(parsed)
+    # Echoes back the decoded address/value for each code, not just "ok" -
+    # lets the UI show exactly what a code resolved to, so it can be
+    # checked against a known cheat-code database for whatever game is
+    # actually loaded.
+    return jsonify({"ok": True, "parsed": parsed})
+
+
 @app.route("/api/rom/<path:filename>/engine", methods=["GET", "POST"])
 @app.route("/r/<room_code>/api/rom/<path:filename>/engine", methods=["GET", "POST"])
 @limiter.limit("30 per minute")

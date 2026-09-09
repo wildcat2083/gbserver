@@ -374,6 +374,15 @@ class Emulator:
             return
         self.cmd_queue.put({"cmd": "release", "button": button})
 
+    def set_cheats(self, codes):
+        """Replaces the entire active cheat list with `codes` - a list of
+        {"address": int, "value": int} dicts, already parsed and
+        validated by the caller (see api_cheats in routes.py; this layer
+        doesn't re-validate). Fire-and-forget like press()/release()
+        above, not synchronous like load_rom - there's nothing here that
+        can meaningfully fail once the codes are already valid dicts."""
+        self.cmd_queue.put({"cmd": "set_cheats", "codes": codes})
+
     def save_now(self):
         """Explicit, on-demand save - the "unless a button is pushed" path,
         separate from the periodic background autosave and from the

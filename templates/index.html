@@ -372,6 +372,22 @@
     <p class="vkeyboard-help">Gamepad: D-pad to move, A to press a key, B to close</p>
   </aside>
 
+  <aside id="cheat-panel" class="cheat-panel" hidden aria-label="Cheat engine">
+    <div class="cheat-panel-inner">
+      <h2>CHEAT ENGINE</h2>
+      <p class="cheat-panel-sub">GameShark-style codes. Only the current controller can apply them. Codes reset when the ROM reloads.</p>
+      <textarea id="cheat-codes-input" class="cheat-codes-input" rows="4" placeholder="One code per line, e.g. 01FF41D2" spellcheck="false"></textarea>
+      <div class="cheat-panel-actions">
+        <button type="button" id="cheat-apply-btn" class="cheat-btn">Apply</button>
+        <button type="button" id="cheat-clear-btn" class="cheat-btn cheat-btn-secondary">Clear all</button>
+        <button type="button" id="cheat-close-btn" class="cheat-btn cheat-btn-secondary">Close</button>
+      </div>
+      <p id="cheat-error" class="cheat-error" hidden></p>
+      <div id="cheat-active-list" class="cheat-active-list"></div>
+    </div>
+  </aside>
+
   <script src="{{ url_for('static', filename='app.js') }}?v={{ asset_version('app.js') }}"></script>
+
 </body>
 </html>

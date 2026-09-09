@@ -478,6 +478,13 @@
   const helpClose = document.getElementById("helpClose");
   const helpPanel = document.getElementById("helpPanel");
   const helpBackdrop = document.getElementById("helpBackdrop");
+  const cheatPanel = document.getElementById("cheat-panel");
+  const cheatCodesInput = document.getElementById("cheat-codes-input");
+  const cheatApplyBtn = document.getElementById("cheat-apply-btn");
+  const cheatClearBtn = document.getElementById("cheat-clear-btn");
+  const cheatCloseBtn = document.getElementById("cheat-close-btn");
+  const cheatError = document.getElementById("cheat-error");
+  const cheatActiveList = document.getElementById("cheat-active-list");
   const chatMessages = document.getElementById("chatMessages");
   const chatForm = document.getElementById("chatForm");
   const chatInput = document.getElementById("chatInput");
@@ -503,6 +510,7 @@
   let settingsOpen = false;
   let chatOpen = false;
   let helpOpen = false;
+  let cheatPanelOpen = false;
   let uploading = false;
   let hapticsEnabled = true;
 
@@ -1036,6 +1044,21 @@
   // relevant while the settings menu is open, since that's the only time
   // these buttons mean "navigate the menu" rather than "game input".
   const menuNavWasPressed = { up: false, down: false, left: false, right: false, a: false, b: false };
+  // Separate edge-detection for the Konami-code easter egg - deliberately
+  // independent of menuNavWasPressed above and of whether the settings
+  // menu is open at all, so the code can be entered on the controller at
+  // any time, the same way it can be typed on the keyboard at any time.
+  const konamiGamepadWasPressed = { up: false, down: false, left: false, right: false, a: false, b: false };
+  // Separate edge-detection for the on-screen keyboard's own grid
+  // navigation - kept independent of menuNavWasPressed (which now only
+  // ever runs while the vkeyboard is CLOSED, see the restructured
+  // pollGamepad below) rather than shared, so switching between panels
+  // mid-press can't leave a stale "already held" flag behind and
+  // silently eat the first press on whichever panel becomes active.
+  const vkeyGamepadWasPressed = { up: false, down: false, left: false, right: false, a: false, b: false };
+  // Same reasoning again, for the cheat panel's own button/textarea list
+  // navigation.
+  const cheatNavWasPressed = { up: false, down: false, left: false, right: false, a: false, b: false };
 
   function handleGamepadConnected(e) {
     gamepadIndex = e.gamepad.index;
@@ -1077,7 +1100,42 @@
         if (settingsIsDown && !settingsGamepadWasPressed) setSettingsOpen(!settingsOpen);
         settingsGamepadWasPressed = settingsIsDown;
 
-        if (settingsOpen) {
+        // Konami-code tracking for the cheat panel easter egg - also
+        // runs unconditionally here (same reasoning as Y/settings just
+        // above), so entering the code on a controller works regardless
+        // of whether the settings menu or virtual keyboard happens to be
+        // open at the time. Uses the same D-pad/A/B button indices as
+        // menu navigation below (12-15, 0, 1) - standard-layout mapping.
+        const konamiButtons = { up: 12, down: 13, left: 14, right: 15, a: 0, b: 1 };
+        for (const [action, idx] of Object.entries(konamiButtons)) {
+          const btn = pad.buttons[idx];
+          const isDown = !!btn && btn.pressed;
+          if (isDown && !konamiGamepadWasPressed[action]) feedKonamiBuffer(action);
+          konamiGamepadWasPressed[action] = isDown;
+        }
+
+        if (isVkeyboardOpen()) {
+          // Hoisted out to its own top-level branch, independent of
+          // settingsOpen/cheatPanelOpen - the on-screen keyboard can now
+          // be opened FROM either panel (a settings text field, or the
+          // cheat panel's code textarea), so its own D-pad/A/B grid
+          // navigation needs to keep working the same way regardless of
+          // which panel is sitting underneath it.
+          const navButtons = { up: 12, down: 13, left: 14, right: 15, a: 0, b: 1 };
+          for (const [action, idx] of Object.entries(navButtons)) {
+            const btn = pad.buttons[idx];
+            const isDown = !!btn && btn.pressed;
+            if (isDown && !vkeyGamepadWasPressed[action]) {
+              if (action === "up") moveVkeyFocus(-1, 0);
+              else if (action === "down") moveVkeyFocus(1, 0);
+              else if (action === "left") moveVkeyFocus(0, -1);
+              else if (action === "right") moveVkeyFocus(0, 1);
+              else if (action === "a") pressVkeyFocused();
+              else if (action === "b") closeVirtualKeyboard();
+            }
+            vkeyGamepadWasPressed[action] = isDown;
+          }
+        } else if (settingsOpen) {
           // While the menu is open, D-pad/A/B drive menu navigation
           // instead of game input entirely - otherwise navigating the
           // menu with the D-pad would simultaneously send button presses
@@ -1087,18 +1145,7 @@
             const btn = pad.buttons[idx];
             const isDown = !!btn && btn.pressed;
             if (isDown && !menuNavWasPressed[action]) {
-              if (isVkeyboardOpen()) {
-                // The on-screen keyboard sits "on top" of settings
-                // navigation while open - same buttons, different
-                // meaning (2D grid movement and typing, not moving
-                // between settings controls).
-                if (action === "up") moveVkeyFocus(-1, 0);
-                else if (action === "down") moveVkeyFocus(1, 0);
-                else if (action === "left") moveVkeyFocus(0, -1);
-                else if (action === "right") moveVkeyFocus(0, 1);
-                else if (action === "a") pressVkeyFocused();
-                else if (action === "b") closeVirtualKeyboard();
-              } else if (action === "up") moveSettingsFocus(-1);
+              if (action === "up") moveSettingsFocus(-1);
               else if (action === "down") moveSettingsFocus(1);
               else if (action === "left") adjustFocusedSettingsElement(-1);
               else if (action === "right") adjustFocusedSettingsElement(1);
@@ -1106,6 +1153,30 @@
               else if (action === "b") setSettingsOpen(false);
             }
             menuNavWasPressed[action] = isDown;
+          }
+        } else if (cheatPanelOpen) {
+          // Row/column navigation, not the flat list the settings menu
+          // above uses - the panel's controls aren't a single vertical
+          // list: the textarea is its own row, but Apply/Clear all/Close
+          // sit side by side in one horizontal row (see .cheat-panel-actions
+          // in style.css), so right/left should move along THAT row,
+          // exactly like the on-screen keyboard's own grid below handles
+          // rows of differing shapes - down from the textarea shouldn't
+          // be the only way to reach Clear all when it's visually to the
+          // right of Apply.
+          const navButtons = { up: 12, down: 13, left: 14, right: 15, a: 0, b: 1 };
+          for (const [action, idx] of Object.entries(navButtons)) {
+            const btn = pad.buttons[idx];
+            const isDown = !!btn && btn.pressed;
+            if (isDown && !cheatNavWasPressed[action]) {
+              if (action === "up") moveCheatFocus(-1, 0);
+              else if (action === "down") moveCheatFocus(1, 0);
+              else if (action === "left") moveCheatFocus(0, -1);
+              else if (action === "right") moveCheatFocus(0, 1);
+              else if (action === "a") activateFocusedElementIn(cheatPanel);
+              else if (action === "b") setCheatPanelOpen(false);
+            }
+            cheatNavWasPressed[action] = isDown;
           }
         } else {
           // Face/menu buttons + d-pad
@@ -1264,6 +1335,7 @@
     document.body.style.overflow = open ? "hidden" : "";
     if (open && chatOpen) setChatOpen(false); // one panel at a time
     if (open && helpOpen) setHelpOpen(false);
+    if (open && cheatPanelOpen) setCheatPanelOpen(false);
     if (open) {
       // Focus the first control immediately, mainly for controller users -
       // otherwise there'd be no visible focus indicator at all until the
@@ -1300,28 +1372,28 @@
   // normal focus-ring styling and each control's own native semantics
   // come along for free.
 
-  function getFocusableSettingsElements() {
-    if (!settingsPanel) return [];
-    return Array.from(settingsPanel.querySelectorAll('button, select, input:not([type="file"]), [tabindex]'))
+  function getFocusableElementsIn(container) {
+    if (!container) return [];
+    return Array.from(container.querySelectorAll('button, select, input:not([type="file"]), textarea, [tabindex]'))
       .filter((el) => !el.disabled && el.offsetParent !== null); // offsetParent excludes hidden/collapsed elements
   }
 
-  function moveSettingsFocus(direction) {
-    const elements = getFocusableSettingsElements();
+  function moveFocusIn(container, direction) {
+    const elements = getFocusableElementsIn(container);
     if (elements.length === 0) return;
     const currentIndex = elements.indexOf(document.activeElement);
-    // If focus is currently outside the panel (or nothing's focused yet),
-    // start from the beginning rather than computing a meaningless offset
-    // from index -1.
+    // If focus is currently outside the container (or nothing's focused
+    // yet), start from the beginning rather than computing a meaningless
+    // offset from index -1.
     const nextIndex = currentIndex === -1
       ? 0
       : (currentIndex + direction + elements.length) % elements.length;
     elements[nextIndex].focus();
   }
 
-  function adjustFocusedSettingsElement(direction) {
+  function adjustFocusedElementIn(container, direction) {
     const el = document.activeElement;
-    if (!settingsPanel.contains(el)) return;
+    if (!container.contains(el)) return;
     if (el.tagName === "SELECT") {
       const newIndex = Math.max(0, Math.min(el.options.length - 1, el.selectedIndex + direction));
       if (newIndex !== el.selectedIndex) {
@@ -1338,8 +1410,21 @@
         el.dispatchEvent(new Event("input", { bubbles: true }));
       }
     }
-    // Buttons and checkboxes don't have a meaningful "adjust" direction -
-    // left/right does nothing for them, only A (see below) does.
+    // Buttons, checkboxes, and text areas don't have a meaningful
+    // "adjust" direction - left/right does nothing for them, only A
+    // (see below) does.
+  }
+
+  // Settings-specific wrappers - kept so the settings-menu call sites
+  // below don't need to pass settingsPanel explicitly every time.
+  function getFocusableSettingsElements() {
+    return getFocusableElementsIn(settingsPanel);
+  }
+  function moveSettingsFocus(direction) {
+    moveFocusIn(settingsPanel, direction);
+  }
+  function adjustFocusedSettingsElement(direction) {
+    adjustFocusedElementIn(settingsPanel, direction);
   }
 
   // --- On-screen keyboard -------------------------------------------------
@@ -1450,9 +1535,9 @@
     }
   }
 
-  function activateFocusedSettingsElement() {
+  function activateFocusedElementIn(container) {
     const el = document.activeElement;
-    if (!settingsPanel.contains(el)) return;
+    if (!container.contains(el)) return;
     if (el.tagName === "BUTTON" || el.tagName === "LABEL") {
       // A <label for="..."> click is standard browser behavior for
       // triggering its associated control - this is what makes the
@@ -1462,16 +1547,25 @@
     } else if (el.tagName === "INPUT" && el.type === "checkbox") {
       el.checked = !el.checked;
       el.dispatchEvent(new Event("change", { bubbles: true }));
-    } else if (el.tagName === "INPUT" && el.type === "text") {
+    } else if ((el.tagName === "INPUT" && el.type === "text") || el.tagName === "TEXTAREA") {
       // No physical keyboard attached, and a gamepad has no character
-      // keys of its own - open the on-screen one instead.
+      // keys of its own - open the on-screen one instead. Works the same
+      // for a <textarea> (the cheat panel's code box) as a single-line
+      // text input - openVirtualKeyboard only ever reads/writes .value,
+      // which both element types have.
       openVirtualKeyboard(el);
     } else if (el.tagName === "SELECT") {
       // No clean way to programmatically open a native <select>'s
       // dropdown - cycling it forward is a reasonable fallback so A still
       // does something useful when a dropdown has focus.
-      adjustFocusedSettingsElement(1);
+      adjustFocusedElementIn(container, 1);
     }
+  }
+
+  // Settings-specific wrapper - see the note above the other
+  // getFocusableSettingsElements/moveSettingsFocus/etc. wrappers.
+  function activateFocusedSettingsElement() {
+    activateFocusedElementIn(settingsPanel);
   }
 
   function bindSettings() {
@@ -1535,6 +1629,166 @@
     });
     window.addEventListener("resize", syncSidePanelHeights);
     syncSidePanelHeights();
+  }
+
+  // Hidden easter egg: entering the classic Konami code
+  // (up up down down left right left right b a) anywhere on the page
+  // reveals the cheat engine panel. Tracked in a rolling buffer of the
+  // last 10 keys pressed - deliberately does NOT preventDefault or
+  // otherwise interfere with the arrow keys' normal job of also moving
+  // the game's D-pad; this only listens alongside that, never instead
+  // of it, so trying the code doesn't require pausing gameplay.
+  //
+  // Resolved through KEY_MAP (the same table bindKeyboard() above uses),
+  // not raw key letters - so "b" and "a" here mean the game's B/A
+  // buttons, matching whichever physical keys the player already has
+  // their fingers on (Z/X or literal B/A both work, same as they do for
+  // actually playing), rather than requiring the literal letter keys B
+  // and A specifically.
+  const KONAMI_SEQUENCE = [
+    "up", "up", "down", "down",
+    "left", "right", "left", "right",
+    "b", "a",
+  ];
+  let konamiBuffer = [];
+  // Shared by both input sources below (keyboard keydown and gamepad
+  // polling) - each just resolves its own input to a logical button name
+  // ("up"/"down"/"left"/"right"/"a"/"b") and feeds it in here, so the
+  // actual sequence-matching only lives in one place.
+  function feedKonamiBuffer(btn) {
+    if (!btn) return;
+    konamiBuffer.push(btn);
+    if (konamiBuffer.length > KONAMI_SEQUENCE.length) konamiBuffer.shift();
+    if (
+      konamiBuffer.length === KONAMI_SEQUENCE.length &&
+      konamiBuffer.every((k, i) => k === KONAMI_SEQUENCE[i])
+    ) {
+      konamiBuffer = [];
+      setCheatPanelOpen(true);
+    }
+  }
+  function bindKonamiEasterEgg() {
+    if (!cheatPanel) return;
+    window.addEventListener("keydown", (e) => {
+      feedKonamiBuffer(KEY_MAP[e.code]); // undefined for non-game keys - feedKonamiBuffer ignores those
+    });
+  }
+
+  // Row/column model for the cheat panel's controller navigation - the
+  // textarea is its own row (one column), and the Apply/Clear all/Close
+  // buttons form a second row (three columns), matching the actual
+  // visual layout (see .cheat-panel-actions in style.css) rather than
+  // treating all four controls as one flat vertical list. Read fresh
+  // from the DOM each time, same reasoning as getVkeyRows() below - the
+  // HTML stays the single source of truth for what's actually there.
+  let cheatFocusRow = 0;
+  let cheatFocusCol = 0;
+
+  function getCheatRows() {
+    if (!cheatPanel) return [];
+    const textarea = document.getElementById("cheat-codes-input");
+    const actionRow = Array.from(
+      document.querySelectorAll("#cheat-panel .cheat-panel-actions .cheat-btn")
+    );
+    const rows = [];
+    if (textarea) rows.push([textarea]);
+    if (actionRow.length > 0) rows.push(actionRow);
+    return rows;
+  }
+
+  function moveCheatFocus(dRow, dCol) {
+    const rows = getCheatRows();
+    if (rows.length === 0) return;
+    // Clamped, not wrapped, at both edges - same convention as the
+    // on-screen keyboard's own moveVkeyFocus below, so a controller
+    // behaves consistently the same way across every panel in the app.
+    const newRow = Math.max(0, Math.min(rows.length - 1, cheatFocusRow + dRow));
+    const newCol = Math.max(0, Math.min(rows[newRow].length - 1, cheatFocusCol + dCol));
+    cheatFocusRow = newRow;
+    cheatFocusCol = newCol;
+    const el = rows[cheatFocusRow][cheatFocusCol];
+    if (el) el.focus();
+  }
+
+  function setCheatPanelOpen(open) {
+    cheatPanelOpen = open;
+    cheatPanel.hidden = !open;
+    if (open) {
+      cheatError.hidden = true;
+      if (settingsOpen) setSettingsOpen(false); // one panel at a time, same rule as settings/chat/help
+      if (chatOpen) setChatOpen(false);
+      if (helpOpen) setHelpOpen(false);
+      cheatFocusRow = 0;
+      cheatFocusCol = 0;
+      cheatCodesInput.focus();
+
+      // Same reasoning as the equivalent guard in setSettingsOpen above -
+      // if the Konami code's final press lands while X/turbo-A's rapid
+      // fire is mid-cycle, nothing would otherwise release it once the
+      // panel takes over A's meaning (activate a focused control instead
+      // of pressing the game's A button).
+      if (turboAPhaseOn) {
+        turboAPhaseOn = false;
+        releaseLogical("a");
+      }
+    }
+  }
+
+  function renderActiveCheats(parsed) {
+    if (!parsed || parsed.length === 0) {
+      cheatActiveList.textContent = "No cheats active.";
+      return;
+    }
+    cheatActiveList.innerHTML = "";
+    parsed.forEach((c) => {
+      const row = document.createElement("div");
+      row.className = "cheat-active-row";
+      const addrHex = c.address.toString(16).toUpperCase().padStart(4, "0");
+      const valHex = c.value.toString(16).toUpperCase().padStart(2, "0");
+      row.textContent = `0x${addrHex} = 0x${valHex}`;
+      cheatActiveList.appendChild(row);
+    });
+  }
+
+  async function submitCheats(codes) {
+    cheatError.hidden = true;
+    try {
+      const res = await fetch(apiPath("/api/cheats"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Client-Id": CLIENT_ID },
+        body: JSON.stringify({ codes }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        cheatError.textContent = data.error || "Only the current controller can apply cheats.";
+        cheatError.hidden = false;
+        return;
+      }
+      renderActiveCheats(data.parsed);
+    } catch (err) {
+      cheatError.textContent = "Failed to reach the server.";
+      cheatError.hidden = false;
+    }
+  }
+
+  function bindCheatPanel() {
+    if (!cheatPanel) return;
+    bindKonamiEasterEgg();
+    cheatCloseBtn.addEventListener("click", () => setCheatPanelOpen(false));
+    cheatApplyBtn.addEventListener("click", () => {
+      const lines = cheatCodesInput.value
+        .split("\n")
+        .map((l) => l.trim())
+        .filter((l) => l.length > 0);
+      submitCheats(lines);
+    });
+    cheatClearBtn.addEventListener("click", () => {
+      cheatCodesInput.value = "";
+      submitCheats([]);
+    });
+    window.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && cheatPanelOpen) setCheatPanelOpen(false);
+    });
   }
 
   // On the desktop-docked layout (see the min-width:900px media query),
@@ -1927,8 +2181,49 @@
       }
     });
 
-    saveDownload.addEventListener("click", () => {
-      window.location.href = apiPath("/api/save");
+    saveDownload.addEventListener("click", async () => {
+      // Was a raw window.location.href navigation straight to the API
+      // route - worked fine when a save existed (the browser recognizes
+      // the download response and handles it invisibly), but when there
+      // was no save, the server's JSON error response replaced the
+      // entire page instead of showing an in-app message, since a plain
+      // navigation has no way to inspect the response first. The CSS
+      // "busy" class that's supposed to gray this button out when there's
+      // no save also only blocks pointer-events (mouse/touch) - it
+      // doesn't stop a keyboard Enter/Space on a focused button, or a
+      // gamepad's own activateFocusedElementIn() calling .click()
+      // directly - so this needed to be safe on its own regardless of
+      // that state possibly being stale or bypassed.
+      setSaveMsg("Downloading\u2026", null);
+      try {
+        const res = await fetch(apiPath("/api/save"), {
+          headers: { "X-Client-Id": CLIENT_ID },
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          setSaveMsg(data.error || "No save available to download", "error");
+          return;
+        }
+        const blob = await res.blob();
+        // Pull the real filename from the response rather than
+        // hardcoding one, so it still matches the actual ROM's save
+        // name - falls back to something reasonable only if that
+        // header is missing for some reason.
+        const disposition = res.headers.get("Content-Disposition") || "";
+        const match = disposition.match(/filename="?([^";]+)"?/);
+        const filename = match ? match[1] : "save.state";
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+        setSaveMsg(`Downloaded ${filename}`, "ok");
+      } catch (err) {
+        setSaveMsg("Failed to download save", "error");
+      }
     });
 
     saveFileEl.addEventListener("change", async () => {
@@ -2166,6 +2461,7 @@
   bindChatPanel();
   bindHelpPanel();
   bindChatForm();
+  bindCheatPanel();
   startLibraryPolling();
   refreshLibrary();
 })();

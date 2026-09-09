@@ -68,6 +68,11 @@ def run_worker(cmd_queue, out_queue, roms_dir, saves_dir, sound_sample_rate,
     audio_accum = bytearray()
     last_frame_raw = None
     last_status_sent = None
+    active_cheats = []  # list of {"address": int, "value": int} - GameShark-style RAM
+                         # patches, continuously re-applied every tick below (see the
+                         # comment where they're applied for why re-applying matters).
+                         # Cleared on every ROM load (see do_load_rom) - deliberately not
+                         # persisted across a reset/reload, by design.
     frame_no = 0
     autosave_every = 60 * 60 * autosave_interval_minutes
 
@@ -106,7 +111,13 @@ def run_worker(cmd_queue, out_queue, roms_dir, saves_dir, sound_sample_rate,
 
     def do_load_rom(filename, load_save):
         nonlocal pyboy, rom_path, engine_name, running, fast_forward
-        nonlocal last_frame_raw, audio_accum, frame_no
+        nonlocal last_frame_raw, audio_accum, frame_no, active_cheats
+
+        # Cheats reset on every load/reload, deliberately - including the
+        # same-ROM "Resume save"/Reset cases below, not just switching to
+        # a genuinely different ROM. A cheat silently surviving into a
+        # fresh load would be surprising, not helpful.
+        active_cheats = []
 
         candidate = roms_dir / filename
         # Whether this is reloading the SAME ROM that's already running
@@ -194,6 +205,14 @@ def run_worker(cmd_queue, out_queue, roms_dir, saves_dir, sound_sample_rate,
         with open(source_path, "rb") as f:
             pyboy.load_state(f)
 
+    def do_set_cheats(codes):
+        """Replaces the entire active cheat list wholesale - the caller
+        (Emulator.set_cheats) always sends the FULL current list, not an
+        incremental add/remove, so this is just a plain reassignment
+        rather than needing to track additions/removals here too."""
+        nonlocal active_cheats
+        active_cheats = codes
+
     def grab_frame():
         return pyboy.screen.ndarray.tobytes()
 
@@ -241,6 +260,9 @@ def run_worker(cmd_queue, out_queue, roms_dir, saves_dir, sound_sample_rate,
                 ack()
             elif cmd == "load_from_path":
                 do_load_from_path(msg["path"])
+                ack()
+            elif cmd == "set_cheats":
+                do_set_cheats(msg["codes"])
                 ack()
         except Exception as e:
             ack(ok=False, error=str(e))
@@ -307,6 +329,23 @@ def run_worker(cmd_queue, out_queue, roms_dir, saves_dir, sound_sample_rate,
             applied_fast_forward = fast_forward
 
         alive = pyboy.tick(1, True)
+
+        # GameShark-style cheats: re-applied every single tick, not just
+        # once - a real GameShark works the same way, continuously
+        # forcing its target addresses back to the cheat value, since
+        # the game's own code would otherwise overwrite them on its own
+        # next update (e.g. decrementing health/ammo normally). Applied
+        # AFTER tick() specifically, so this is the last thing to touch
+        # that address before the frame gets rendered/read below -
+        # applying before tick() would just let the game's own logic
+        # immediately overwrite it again within the same frame.
+        if active_cheats:
+            try:
+                for cheat in active_cheats:
+                    pyboy.memory[cheat["address"]] = cheat["value"]
+            except Exception as e:
+                print(f"[worker] failed to apply cheat: {e}")
+
         frame_bytes = grab_frame()
         audio_bytes = grab_audio()  # always drained, even during fast-forward (buffer overrun otherwise)
 

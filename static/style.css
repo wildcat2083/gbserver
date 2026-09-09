@@ -245,6 +245,15 @@ body {
   z-index: 40;
 }
 
+/* #vkeyboardBackdrop reuses .settings-backdrop above for its look, but
+   needs its own, higher z-index - it must sit above whichever panel it
+   was opened from (settings at 50, or the cheat panel at 65), same
+   reasoning as .vkeyboard itself just below cheat-panel's z-index so the
+   keyboard still renders on top of its own backdrop. */
+#vkeyboardBackdrop {
+  z-index: 68;
+}
+
 .settings-panel {
   position: fixed;
   left: 50%;
@@ -290,7 +299,10 @@ body {
   top: 50%;
   transform: translate(-50%, -50%);
   width: min(92vw, 420px);
-  z-index: 60;
+  /* Must sit above EVERY panel that can open it - originally only ever
+     opened from settings (z-index 50), but the cheat panel (65) can open
+     it too now, so it needs to clear that as well, not just settings. */
+  z-index: 70;
   padding: 16px;
   border-radius: 16px;
   border: 3px solid var(--gb-body-edge);
@@ -1346,4 +1358,98 @@ body.viewer-mode #bufferRange {
     flex: 1;
     min-height: 0;
   }
+}
+
+/* Cheat engine panel - hidden easter egg, revealed via Konami code */
+.cheat-panel {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(92vw, 460px);
+  max-height: 80vh;
+  overflow-y: auto;
+  z-index: 65;
+  padding: 18px;
+  border-radius: 16px;
+  border: 3px solid var(--gb-body-edge);
+  background: linear-gradient(180deg, var(--gb-body-highlight) 0%, var(--gb-body) 55%, var(--gb-body-dark) 100%);
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.45);
+}
+
+.cheat-panel h2 {
+  margin: 0 0 6px;
+  font-size: 1.1rem;
+  letter-spacing: 0.05em;
+  color: var(--gb-ink);
+}
+
+.cheat-panel-sub {
+  margin: 0 0 12px;
+  font-size: 0.8rem;
+  color: var(--gb-ink);
+  opacity: 0.8;
+}
+
+.cheat-codes-input {
+  width: 100%;
+  box-sizing: border-box;
+  border-radius: 8px;
+  border: 2px solid var(--gb-body-edge);
+  background: rgba(0, 0, 0, 0.15);
+  color: var(--gb-ink);
+  font-family: monospace;
+  font-size: 0.9rem;
+  padding: 8px 10px;
+  resize: vertical;
+}
+
+.cheat-panel-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+
+.cheat-btn {
+  flex: 1;
+  min-width: 80px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 2px solid var(--gb-body-edge);
+  background: var(--gb-purple);
+  color: var(--gb-ink);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.cheat-btn-secondary {
+  background: rgba(0, 0, 0, 0.15);
+}
+
+.cheat-btn:focus {
+  outline: 3px solid var(--gb-purple);
+  outline-offset: 2px;
+}
+
+.cheat-error {
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(180, 40, 40, 0.25);
+  color: var(--gb-ink);
+  font-size: 0.85rem;
+}
+
+.cheat-active-list {
+  margin-top: 12px;
+  font-family: monospace;
+  font-size: 0.8rem;
+  color: var(--gb-ink);
+  opacity: 0.9;
+}
+
+.cheat-active-list .cheat-active-row {
+  padding: 4px 0;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.1);
 }
