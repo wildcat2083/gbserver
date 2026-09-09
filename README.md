@@ -140,7 +140,7 @@ The settings panel also has:
 - **Stop emulation** — stops the running ROM; the library and saves are
   untouched, just pick a ROM again to resume
 
-Save states also autosave automatically to `saves/` every ~15 seconds and
+Save states also autosave automatically to `saves/` every ~5 minutes and
 restore the next time you load that ROM.
 
 ## Notes
