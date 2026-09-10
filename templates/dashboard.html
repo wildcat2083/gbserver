@@ -101,6 +101,23 @@
       cursor: pointer;
     }
     .kick-btn:hover { background: #6e2830; }
+    .upload-btn {
+      background: #1e3a4a;
+      color: #a3d4f0;
+      border: 1px solid #28546e;
+      border-radius: 6px;
+      padding: 6px 14px;
+      font-size: 0.8rem;
+      cursor: pointer;
+      display: inline-block;
+    }
+    .upload-btn:hover { background: #28546e; }
+    #romUploadMsg {
+      font-size: 0.8rem;
+      margin: 6px 0 0;
+    }
+    #romUploadMsg.ok { color: #7ee0a0; }
+    #romUploadMsg.error { color: #f0a3ac; }
     .empty {
       color: #7a8296;
       font-style: italic;
@@ -181,10 +198,14 @@
 
   <section id="romLibrarySection" hidden>
     <h2>ROM library</h2>
+    <label class="upload-btn" for="romUploadInput">Add ROMs to library</label>
+    <input id="romUploadInput" type="file" accept=".gb,.GB,.gbc,.GBC,application/octet-stream" multiple hidden />
+    <button id="romDeleteSelectedBtn" class="kick-btn" style="margin-left: 8px;" disabled>Delete selected (0)</button>
+    <p id="romUploadMsg"></p>
     <input id="romSearchInput" type="text" placeholder="Search ROMs by filename&hellip;" style="width: 100%; box-sizing: border-box; background: #1b1f29; border: 1px solid #2c3140; border-radius: 6px; padding: 8px 12px; color: #d8dee9; margin-bottom: 10px;" />
     <div id="romLibraryPlaceholder" class="empty">Type to search the library.</div>
     <table id="romLibraryTable" hidden>
-      <thead><tr><th>Filename</th><th>Size</th><th>Has save</th><th>Engine</th><th></th></tr></thead>
+      <thead><tr><th><input type="checkbox" id="romSelectAllCheckbox" /></th><th>Filename</th><th>Size</th><th>Has save</th><th>Engine</th><th></th></tr></thead>
       <tbody id="romLibraryBody"></tbody>
     </table>
   </section>
@@ -490,6 +511,7 @@
     });
 
     let romLibraryData = [];
+    let romSelectedFilenames = new Set();
 
     async function refreshRomLibrary() {
       try {
@@ -502,11 +524,67 @@
       }
     }
 
+    document.getElementById("romUploadInput").addEventListener("change", async () => {
+      const input = document.getElementById("romUploadInput");
+      const msg = document.getElementById("romUploadMsg");
+      const files = Array.from(input.files || []);
+      input.value = "";
+      if (files.length === 0) return;
+
+      // Same /api/upload endpoint the player page's own "Add ROM to
+      // library" control already posts to - it's not tied to any
+      // player-session or room state (just writes into the shared ROM
+      // folder), so it works exactly the same way from here. Uploaded
+      // one at a time, sequentially - simpler to reason about and report
+      // progress on than firing them all in parallel, and file uploads
+      // aren't time-sensitive enough here to need the speed.
+      let succeeded = 0;
+      const failures = [];
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        msg.textContent = `Uploading ${i + 1} of ${files.length}\u2026 (${file.name})`;
+        msg.className = "";
+        const formData = new FormData();
+        formData.append("rom", file);
+        try {
+          const res = await fetch("/api/upload", { method: "POST", body: formData });
+          const data = await res.json();
+          if (data.ok) {
+            succeeded++;
+          } else {
+            failures.push(`${file.name}: ${data.error || "upload failed"}`);
+          }
+        } catch (err) {
+          failures.push(`${file.name}: request failed`);
+        }
+      }
+
+      if (failures.length === 0) {
+        msg.textContent = `Uploaded ${succeeded} ROM${succeeded === 1 ? "" : "s"}`;
+        msg.className = "ok";
+      } else {
+        msg.textContent = `Uploaded ${succeeded}/${files.length} - failed: ${failures.join("; ")}`;
+        msg.className = "error";
+      }
+      refreshRomLibrary();
+    });
+
+    function updateDeleteSelectedButton() {
+      const btn = document.getElementById("romDeleteSelectedBtn");
+      const n = romSelectedFilenames.size;
+      btn.textContent = `Delete selected (${n})`;
+      btn.disabled = n === 0;
+    }
+
     function renderFilteredRomLibrary() {
       const query = (document.getElementById("romSearchInput").value || "").trim().toLowerCase();
       const placeholder = document.getElementById("romLibraryPlaceholder");
       const table = document.getElementById("romLibraryTable");
 
+      // Selections are tracked by filename, not by DOM checkbox state -
+      // deliberately, so they survive a re-render (typing further into
+      // the search box, or a periodic refreshRomLibrary() call) instead
+      // of silently resetting every time the visible rows change.
       if (!query) {
         placeholder.hidden = false;
         placeholder.textContent = `Type to search the library (${romLibraryData.length} ROM${romLibraryData.length === 1 ? "" : "s"}).`;
@@ -526,6 +604,7 @@
       table.hidden = false;
       document.getElementById("romLibraryBody").innerHTML = matches.map((r) => `
         <tr>
+          <td><input type="checkbox" class="rom-select-checkbox" data-filename="${r.filename}" ${romSelectedFilenames.has(r.filename) ? "checked" : ""} /></td>
           <td>${r.filename}</td>
           <td>${(r.size_bytes / 1024 / 1024).toFixed(1)} MB</td>
           <td>${pill(r.has_save, "yes", "no")}</td>
@@ -533,6 +612,11 @@
           <td><button class="kick-btn" data-filename="${r.filename}">Delete</button></td>
         </tr>
       `).join("");
+
+      // "Select all" reflects only the currently-VISIBLE (filtered) rows,
+      // not the whole library - matches every match currently on screen.
+      const selectAll = document.getElementById("romSelectAllCheckbox");
+      selectAll.checked = matches.length > 0 && matches.every((r) => romSelectedFilenames.has(r.filename));
     }
 
     document.getElementById("romSearchInput").addEventListener("input", renderFilteredRomLibrary);
@@ -549,12 +633,75 @@
         });
         const data = await res.json();
         if (!res.ok) alert(`Couldn't delete that ROM: ${data.error || res.status}`);
+        romSelectedFilenames.delete(filename); // no longer exists, so no longer a valid selection either
         refreshRomLibrary();
         refresh();
       } catch (err) {
         alert("Request failed - see console for details.");
         console.error(err);
       }
+    });
+
+    document.getElementById("romLibraryBody").addEventListener("change", (event) => {
+      const checkbox = event.target.closest(".rom-select-checkbox");
+      if (!checkbox) return;
+      const filename = checkbox.dataset.filename;
+      if (checkbox.checked) romSelectedFilenames.add(filename);
+      else romSelectedFilenames.delete(filename);
+      updateDeleteSelectedButton();
+      renderFilteredRomLibrary(); // keeps the "select all" checkbox's own state in sync
+    });
+
+    document.getElementById("romSelectAllCheckbox").addEventListener("change", (event) => {
+      const query = (document.getElementById("romSearchInput").value || "").trim().toLowerCase();
+      const matches = romLibraryData.filter((r) => r.filename.toLowerCase().includes(query));
+      if (event.target.checked) {
+        matches.forEach((r) => romSelectedFilenames.add(r.filename));
+      } else {
+        matches.forEach((r) => romSelectedFilenames.delete(r.filename));
+      }
+      updateDeleteSelectedButton();
+      renderFilteredRomLibrary();
+    });
+
+    document.getElementById("romDeleteSelectedBtn").addEventListener("click", async () => {
+      const filenames = Array.from(romSelectedFilenames);
+      if (filenames.length === 0) return;
+      if (!confirm(`Delete ${filenames.length} selected ROM${filenames.length === 1 ? "" : "s"} from the library? This also stops any of them everywhere they're currently loaded, and cannot be undone.`)) return;
+
+      const btn = document.getElementById("romDeleteSelectedBtn");
+      btn.disabled = true;
+      let succeeded = 0;
+      const failures = [];
+      // Sequential, same reasoning as the multi-upload above - one at a
+      // time against the existing single-delete route, simpler to
+      // reason about and report progress on than a parallel burst.
+      for (let i = 0; i < filenames.length; i++) {
+        const filename = filenames[i];
+        btn.textContent = `Deleting ${i + 1} of ${filenames.length}\u2026`;
+        try {
+          const res = await fetch(`/api/admin/rom/${encodeURIComponent(filename)}`, {
+            method: "DELETE",
+            headers: { [ADMIN_TOKEN_HEADER]: `Bearer ${adminToken}` },
+          });
+          const data = await res.json();
+          if (res.ok) {
+            succeeded++;
+            romSelectedFilenames.delete(filename);
+          } else {
+            failures.push(`${filename}: ${data.error || res.status}`);
+          }
+        } catch (err) {
+          failures.push(`${filename}: request failed`);
+        }
+      }
+
+      if (failures.length > 0) {
+        alert(`Deleted ${succeeded}/${filenames.length}. Failures:\n${failures.join("\n")}`);
+      }
+      updateDeleteSelectedButton();
+      refreshRomLibrary();
+      refresh();
     });
 
     async function refreshActionLog() {
