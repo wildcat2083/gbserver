@@ -2208,8 +2208,6 @@
     saveInfo.textContent = configRes.has_save
       ? "A save exists for the current ROM."
       : "No save for the current ROM yet.";
-    saveDownload.classList.toggle("busy", !configRes.has_save);
-    saveDelete.classList.toggle("busy", !configRes.has_save);
 
     if (audioBadge) {
       // Only relevant once a ROM is actually running - hidden if nothing's
