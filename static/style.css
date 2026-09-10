@@ -1453,3 +1453,217 @@ body.viewer-mode #bufferRange {
   padding: 4px 0;
   border-bottom: 1px solid rgba(0, 0, 0, 0.1);
 }
+
+/* Fullscreen overlay mode - #gameStage (screen + all on-screen controls)
+   is the actual fullscreen element now (see toggleFullscreen in app.js),
+   not just the bare canvas, specifically so a phone with no physical
+   controller has SOME way to press a button while fullscreen at all.
+   Everything below only applies while :fullscreen is actually active -
+   normal stacked layout the rest of the time, completely unaffected. */
+#gameStage:fullscreen,
+#gameStage:-webkit-full-screen {
+  position: relative;
+  width: 100vw;
+  height: 100dvh;
+  max-width: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #000;
+  padding: 0;
+  margin: 0;
+}
+
+/* The canvas itself fills as much of the fullscreen viewport as it can
+   while keeping its aspect ratio - the decorative bezel padding/border
+   is dropped too, since it just eats into space the game could use. */
+#gameStage:fullscreen .screen-bezel,
+#gameStage:-webkit-full-screen .screen-bezel {
+  background: none;
+  border-radius: 0;
+  padding: 0;
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#gameStage:fullscreen .screen-meta,
+#gameStage:-webkit-full-screen .screen-meta {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 5;
+  background: rgba(0, 0, 0, 0.45);
+  padding: 6px 10px;
+  margin: 0;
+  justify-content: center;
+  font-size: 0.75rem;
+}
+
+#gameStage:fullscreen .screen-wrap,
+#gameStage:-webkit-full-screen .screen-wrap {
+  /* Simply fills the whole fullscreen viewport now - no more juggling
+     height/max-width/aspect-ratio against each other, which is exactly
+     what caused the stretching: on a portrait phone, a 160:144 box tall
+     enough to reach 100dvh needs to be WIDER than the screen, so
+     max-width clamped the width down - but the explicit height:100dvh
+     never shrank to match, breaking the ratio. object-fit below (a
+     standard, well-supported technique for exactly this - same idea as
+     an <img>/<video> fitted into a box) handles the actual aspect-ratio
+     preservation instead, so the wrapper itself doesn't need to fight
+     over its own dimensions at all. */
+  width: 100vw;
+  height: 100dvh;
+  max-width: none;
+  aspect-ratio: unset;
+}
+
+#gameStage:fullscreen .screen-wrap #screen,
+#gameStage:fullscreen .screen-wrap #screenGL,
+#gameStage:-webkit-full-screen .screen-wrap #screen,
+#gameStage:-webkit-full-screen .screen-wrap #screenGL {
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  /* Scales the canvas's actual 160x144 content to fit within its box
+     WITHOUT stretching - letterboxing (empty space) on whichever axis
+     doesn't perfectly match, same as a correctly-configured <video>,
+     rather than distorting the image to fill the box exactly. */
+  object-fit: contain;
+}
+
+/* --- The on-screen controls, repositioned as a semi-transparent
+   overlay directly on top of the game screen instead of their normal
+   stacked-below-the-screen layout. Opacity (not just a translucent
+   background) is what actually makes this "semi-translucent" as asked
+   for - the game art underneath stays visible through the buttons
+   themselves, not just in the gaps between them. Full opacity briefly
+   on an actual touch (:active) makes a pressed button easy to confirm
+   at a glance without needing to look away from the game. */
+#gameStage:fullscreen .emulator-controls,
+#gameStage:fullscreen .controls,
+#gameStage:fullscreen .system-buttons,
+#gameStage:-webkit-full-screen .emulator-controls,
+#gameStage:-webkit-full-screen .controls,
+#gameStage:-webkit-full-screen .system-buttons {
+  position: absolute;
+  z-index: 10;
+  opacity: 0.55;
+  margin: 0;
+  padding: 0;
+  transition: opacity 0.15s ease;
+}
+
+#gameStage:fullscreen .emulator-controls:active,
+#gameStage:fullscreen .controls:active,
+#gameStage:fullscreen .system-buttons:active,
+#gameStage:fullscreen .emulator-controls:focus-within,
+#gameStage:fullscreen .controls:focus-within,
+#gameStage:fullscreen .system-buttons:focus-within,
+#gameStage:-webkit-full-screen .emulator-controls:active,
+#gameStage:-webkit-full-screen .controls:active,
+#gameStage:-webkit-full-screen .system-buttons:active {
+  opacity: 0.9;
+}
+
+#gameStage:fullscreen .controls,
+#gameStage:-webkit-full-screen .controls {
+  bottom: 4dvh;
+  left: 0;
+  right: 0;
+  width: 100%;
+  padding: 0 4vw;
+  min-height: 0;
+}
+
+#gameStage:fullscreen .system-buttons,
+#gameStage:-webkit-full-screen .system-buttons {
+  /* Confirmed via two paired screenshots (portrait and landscape) that
+     one offset genuinely can't serve both orientations - the horizontal
+     gap between the D-pad and A/B (where Select/Start need to fit
+     without touching either) is wide in landscape (comfortable at
+     nearly the same height) but narrow in portrait (not enough room,
+     so they need real vertical separation instead). Default here is
+     the LANDSCAPE value - a small nudge above the D-pad/A/B row, per
+     feedback that it needed to come down further still. The media
+     query below overrides this for narrow (portrait-shaped) viewports
+     specifically, going back to a much larger stagger - confirmed via
+     screenshot that anything smaller genuinely overlaps B on a narrow
+     screen, this isn't just extra caution. */
+  bottom: calc(4dvh + 12px);
+  left: 50%;
+  transform: translateX(-50%);
+  gap: 24px;
+  margin: 0;
+}
+
+#gameStage:fullscreen .emulator-controls,
+#gameStage:-webkit-full-screen .emulator-controls {
+  top: 40px;
+  right: 10px;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+#gameStage:fullscreen .emulator-controls .ff-btn,
+#gameStage:-webkit-full-screen .emulator-controls .ff-btn {
+  padding: 6px 10px;
+  font-size: 0.7rem;
+}
+
+/* Waiting/request-control notices and the connect gate already
+   position themselves relative to .screen-wrap / in normal flow - they
+   continue to work the same way here, just now genuinely visible while
+   fullscreen instead of being cut off outside the fullscreen element. */
+#gameStage:fullscreen #waitingForControlNotice,
+#gameStage:-webkit-full-screen #waitingForControlNotice {
+  position: absolute;
+  bottom: 22dvh;
+  left: 0;
+  right: 0;
+  z-index: 6;
+  margin: 0;
+  padding: 6px 12px;
+  background: rgba(0, 0, 0, 0.55);
+  text-align: center;
+  font-size: 0.75rem;
+}
+
+/* Narrow (portrait-shaped) viewports specifically - not the same
+   breakpoint as the small-screen one below, which is about absolute
+   size, not shape. A phone held in landscape can easily be wider than
+   this even if it's a small phone, and should still get the default
+   (smaller) .system-buttons clearance above, not this one - what
+   matters here is whether there's enough horizontal gap between the
+   D-pad and A/B for Select/Start to fit without a real vertical
+   stagger, which is a shape question, not a size one. */
+@media (max-width: 700px) {
+  #gameStage:fullscreen .system-buttons,
+  #gameStage:-webkit-full-screen .system-buttons {
+    /* Confirmed via a real screenshot that anything close to the D-pad/
+       A/B row's own height overlaps B directly on a narrow screen -
+       172px (the default dpad height) + 24px clearance staggers it
+       comfortably above that row instead. */
+    bottom: calc(4dvh + 172px + 24px);
+  }
+}
+
+@media (max-width: 480px) {
+  #gameStage:fullscreen .dpad,
+  #gameStage:-webkit-full-screen .dpad {
+    width: 148px;
+    height: 148px;
+    grid-template-columns: 46px 46px 46px;
+    grid-template-rows: 46px 46px 46px;
+  }
+  #gameStage:fullscreen .face-btn,
+  #gameStage:-webkit-full-screen .face-btn {
+    width: 66px;
+    height: 66px;
+  }
+}

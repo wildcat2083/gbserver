@@ -43,6 +43,7 @@
   const canvas = document.getElementById("screen");
   const ctx = canvas.getContext("2d", { alpha: false });
   const canvasGL = document.getElementById("screenGL");
+  const gameStage = document.getElementById("gameStage");
   const imageData = ctx.createImageData(WIDTH, HEIGHT);
 
   // --- WebGL video filters (Off / Smooth / Smart smooth) -----------------
@@ -370,13 +371,17 @@
 
   // Double-click the screen to toggle fullscreen. Vendor-prefixed fallback
   // covers older Safari, which hasn't adopted the unprefixed API.
-  function activeCanvas() {
-    // Fullscreen needs to target whichever canvas is actually visible -
-    // #screen when no filter is active, #screenGL when Smooth/Smart smooth
-    // is selected (see applyFilterVisibility).
-    return currentFilter === "off" ? canvas : canvasGL;
-  }
-
+  //
+  // Targets #gameStage (the screen PLUS the on-screen D-pad/face/system
+  // buttons and fast-forward/reset/mute), not just the bare <canvas> -
+  // canvas elements can't contain other DOM elements at all, so
+  // fullscreening the canvas alone meant the on-screen touch controls
+  // were never part of what actually went fullscreen: on a phone with no
+  // physical controller, fullscreen mode had genuinely no way to press
+  // any button at all. The on-screen controls are repositioned into a
+  // semi-transparent overlay specifically while fullscreen is active
+  // (see the :fullscreen rules in style.css) - normal stacked layout the
+  // rest of the time.
   function toggleFullscreen() {
     const fsElement =
       document.fullscreenElement || document.webkitFullscreenElement;
@@ -384,10 +389,9 @@
       (document.exitFullscreen || document.webkitExitFullscreen).call(document);
       return;
     }
-    const target = activeCanvas();
-    const request = target.requestFullscreen || target.webkitRequestFullscreen;
+    const request = gameStage.requestFullscreen || gameStage.webkitRequestFullscreen;
     if (request) {
-      request.call(target).catch(() => {
+      request.call(gameStage).catch(() => {
         // Some browsers reject if not triggered by a direct user gesture -
         // dblclick always counts, so this is mostly a defensive no-op.
       });
