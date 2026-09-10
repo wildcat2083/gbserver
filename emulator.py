@@ -36,6 +36,7 @@ from config import (
     NO_INPUT_TIMEOUT_SECONDS,
     ROMS_DIR,
     SOUND_SAMPLE_RATE,
+    SOUND_VOLUME,
 )
 from engine_config import get_engine_for_rom
 from emu_worker import run_worker
@@ -97,7 +98,7 @@ class Emulator:
             target=run_worker,
             args=(
                 self.cmd_queue, self.out_queue, ROMS_DIR, self.saves_dir,
-                SOUND_SAMPLE_RATE, AUDIO_BATCH_TICKS, AUTOSAVE_INTERVAL_MINUTES,
+                SOUND_SAMPLE_RATE, SOUND_VOLUME, AUDIO_BATCH_TICKS, AUTOSAVE_INTERVAL_MINUTES,
                 FAST_FORWARD_SPEED,
             ),
             daemon=True,
@@ -345,6 +346,84 @@ class Emulator:
         file_storage.save(save_path)
         save_load_error = self.load_rom(rom_name)  # (re)starts the ROM with the new save applied
         return rom_name, save_load_error
+
+    def convert_sav(self, file_storage):
+        """Boots the target ROM completely fresh with the uploaded .sav's
+        bytes injected as cartridge RAM (exactly like inserting a real
+        battery-backed cartridge) - does NOT load any existing .state,
+        since the whole point of this is to bridge into one that doesn't
+        exist yet. Same ROM-matching convention as upload_save above:
+        the currently-loaded ROM, or whichever ROM's filename matches
+        the upload's own name if nothing is currently playing.
+
+        The resulting session plays completely normally afterward - the
+        person navigates any continue/load screen the game itself has
+        through the normal controls, then uses the existing "Save now"
+        to actually capture a .state once they've reached the point they
+        want frozen. This method itself never writes a .state file - it
+        only gets the game running with the right starting RAM; capturing
+        the actual state is a separate, explicit action, same as it is
+        for a completely fresh game with no prior save at all.
+
+        Returns rom_name, so the caller can sync the dropdown/UI to it -
+        same reasoning as upload_save.
+
+        Raises ValueError if no ROM can be determined, or if the target
+        ROM's configured engine isn't pyboy - boytacean's constructor
+        isn't confirmed to support injecting cartridge RAM this way, so
+        this deliberately doesn't guess.
+        """
+        rom_name = self._current_rom_name
+
+        if rom_name is None:
+            stem = Path(file_storage.filename).stem
+            candidate_gb = ROMS_DIR / f"{stem}.gb"
+            candidate_gbc = ROMS_DIR / f"{stem}.gbc"
+            if candidate_gb.exists():
+                rom_name = candidate_gb.name
+            elif candidate_gbc.exists():
+                rom_name = candidate_gbc.name
+            else:
+                raise ValueError(
+                    f'No ROM is currently loaded, and no ROM named "{stem}.gb" or '
+                    f'"{stem}.gbc" was found in the library to match this save. '
+                    f"Load the matching ROM first, or make sure the .sav file's "
+                    f"name matches the ROM's filename."
+                )
+
+        from engine_config import get_engine_for_rom
+        if get_engine_for_rom(rom_name) == "boytacean":
+            raise ValueError(
+                "Converting a .sav requires the pyboy engine - switch this "
+                "ROM's engine to pyboy first (see the ROM library's engine "
+                "selector), then try again."
+            )
+
+        sav_bytes = file_storage.read()
+        ack = self._send_and_wait({
+            "cmd": "load_rom_with_ram", "filename": rom_name, "ram_bytes": sav_bytes,
+        })
+        if not ack["ok"]:
+            raise RuntimeError(ack.get("error") or "load_rom_with_ram failed in worker")
+        self._worker_reports_running = True
+        self._maybe_start_idle_controller_timer()
+        self._maybe_start_no_input_timer()
+        return rom_name
+
+    def extract_sav(self):
+        """Returns the current session's cartridge RAM as raw bytes, for
+        the "Download .sav" button - the reverse of convert_sav above.
+        Momentarily pauses and resumes the running session on the worker
+        side to extract this (PyBoy has no way to read it out otherwise),
+        genuinely instant from here - see do_extract_sav's own docstring
+        for why this is safe and lossless, confirmed via direct testing.
+
+        Raises ValueError if no ROM is loaded or the engine isn't pyboy.
+        """
+        ack = self._send_and_wait({"cmd": "extract_sav"})
+        if not ack["ok"]:
+            raise ValueError(ack.get("error") or "extract_sav failed in worker")
+        return ack["sav_bytes"]
 
     def delete_save(self):
         """Deletes the on-disk save for the current ROM only - the

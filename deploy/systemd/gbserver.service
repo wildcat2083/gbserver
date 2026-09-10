@@ -28,7 +28,7 @@ RestartSec=3
 # but some environments still expect these to be set harmlessly.
 Environment=SDL_VIDEODRIVER=dummy
 Environment=SDL_AUDIODRIVER=dummy
-Environment=GBSERVER_ADMIN_TOKEN=
+Environment=GBSERVER_ADMIN_TOKEN=changeme
 Environment=GBSERVER_MAX_ROOMS=20
 
 [Install]

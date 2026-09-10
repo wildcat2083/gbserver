@@ -6,8 +6,10 @@ rooms.py and emulator.py.
 """
 import json
 import random
+import io
+from pathlib import Path
 
-from flask import jsonify, make_response, render_template, request, send_from_directory
+from flask import jsonify, make_response, render_template, request, send_from_directory, send_file
 
 from app import app, limiter, sock
 from config import (
@@ -375,6 +377,70 @@ def api_save(room_code=None):
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     return jsonify({"ok": True})
+
+
+@app.route("/api/convert-save", methods=["POST"])
+@app.route("/r/<room_code>/api/convert-save", methods=["POST"])
+@limiter.limit("30 per minute")
+def api_convert_save(room_code=None):
+    """Boots the target ROM fresh with an uploaded .sav's bytes injected
+    as cartridge RAM - the "Convert Save" settings button. Does NOT
+    write a .state file itself; the person plays normally afterward
+    (navigating any in-game continue/load screen through the regular
+    controls) and uses the existing "Save now" once they've reached the
+    point they want captured. See Emulator.convert_sav's own docstring
+    for the full reasoning."""
+    emu = get_emulator_or_404(room_code)
+    denied = controller_check(emu)
+    if denied:
+        return denied
+    f = request.files.get("sav")
+    if f is None or f.filename == "":
+        return jsonify({"error": "no file"}), 400
+    try:
+        rom_name = emu.convert_sav(f)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except RuntimeError as e:
+        return jsonify({"error": str(e)}), 500
+    # Same reasoning as api_save's POST handler above - the client needs
+    # to know which ROM this actually applied to, to sync its own
+    # dropdown/UI state.
+    return jsonify({"ok": True, "rom": rom_name})
+
+
+@app.route("/api/sav", methods=["GET"])
+@app.route("/r/<room_code>/api/sav", methods=["GET"])
+@limiter.limit("30 per minute")
+def api_download_sav(room_code=None):
+    """Downloads the current session's cartridge RAM as a .sav file -
+    see Emulator.extract_sav's own docstring for how this is actually
+    extracted (a momentary, lossless pause/resume on the worker side,
+    not a read of some file already sitting on disk - gbserver never
+    persists a .sav on its own, only .state).
+
+    Controller-only, unlike the plain .state download above (GET
+    /api/save) - that one's a pure read of a static file, but this one
+    triggers a real reboot cycle on the live emulator process, so it's
+    gated the same as other actions that actually touch the running
+    session, not treated as a free read.
+    """
+    emu = get_emulator_or_404(room_code)
+    denied = controller_check(emu)
+    if denied:
+        return denied
+    try:
+        sav_bytes = emu.extract_sav()
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    rom_name = emu.current_rom_name()
+    download_name = (Path(rom_name).stem if rom_name else "save") + ".sav"
+    return send_file(
+        io.BytesIO(sav_bytes),
+        mimetype="application/octet-stream",
+        as_attachment=True,
+        download_name=download_name,
+    )
 
 
 

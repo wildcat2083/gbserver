@@ -560,23 +560,7 @@
   // drift in the first place. This caps how far ahead playback is allowed
   // to schedule; past this, the excess is treated the same as an
   // underrun - snapped back to "now", not gradually drained.
-  //
-  // Was 0.25 (250ms) - too tight for a different scenario than the one
-  // above: a genuine transient STALL in delivery (GC pause, GIL
-  // contention from another thread in the same gunicorn worker, a
-  // scheduling hiccup on the Pi), not gradual drift. Confirmed via
-  // real diagnostic logging: a single ~376ms stall, followed by its
-  // backlog catching up, pushed nextStartTime past the old 250ms
-  // ceiling within just a couple of chunks, triggering this same reset
-  // path - which is itself an abrupt discontinuity in the schedule, and
-  // very likely the actual buzz/glitch being heard, not a data problem
-  // at all. Raised to comfortably absorb a stall of that measured size
-  // (and somewhat worse) by smoothly playing through the backlog
-  // instead, at the cost of a higher worst-case audio/video desync in
-  // the rare event this ceiling is still hit - an acceptable trade for
-  // a casual co-op stream, where an occasional few-hundred-ms sync
-  // slip is far less noticeable than an audible glitch on every stall.
-  const MAX_SCHEDULE_AHEAD = 0.7;
+  const MAX_SCHEDULE_AHEAD = 0.25;
 
   // PyBoy's sound buffer is fixed at 8-bit (256 amplitude levels) - this is
   // a limitation of the emulator's audio core, not the sample rate. Raw
@@ -615,22 +599,6 @@
     const nSamples = int8Bytes.length / 2;
     if (nSamples < 1) return;
 
-    // --- Temporary diagnostic: raw capture for offline analysis ---
-    // Captures the EXACT bytes as received from the server, before any
-    // client-side processing (smoothing filter, WebAudio scheduling) -
-    // meant to isolate whether distortion is already present in the raw
-    // data itself versus introduced by live browser playback. Call
-    // __downloadAudioCapture() from the console to save what's been
-    // captured so far as a real .wav file, playable in Audacity/VLC/etc,
-    // completely independent of this page's own WebAudio pipeline.
-    window.__audioCapture = window.__audioCapture || [];
-    if (window.__audioCapture.reduce((n, c) => n + c.length, 0) < SAMPLE_RATE * 2 * 15) {
-      // Capped at ~15 seconds of stereo audio - plenty to hear a buzz,
-      // without letting this grow unbounded in memory.
-      window.__audioCapture.push(int8Bytes.slice());
-    }
-    // --- end raw-capture instrumentation ---
-
     const buffer = audioCtx.createBuffer(2, nSamples, SAMPLE_RATE);
     const left = buffer.getChannelData(0);
     const right = buffer.getChannelData(1);
@@ -662,108 +630,11 @@
     source.connect(audioCtx.destination);
 
     const now = audioCtx.currentTime;
-    // --- Temporary diagnostic instrumentation for the buzzing report ---
-    // Logs the moment either correction branch actually fires, plus a
-    // periodic summary of chunk arrival timing - meant to be removed
-    // once the actual cause is confirmed, not a permanent addition.
-    window.__audioDiag = window.__audioDiag || {
-      fellBehindCount: 0, resetCount: 0, chunkCount: 0,
-      lastArrival: null, minGapMs: Infinity, maxGapMs: 0,
-      lastSummary: now,
-    };
-    const diag = window.__audioDiag;
-    diag.chunkCount++;
-    if (diag.lastArrival !== null) {
-      const gapMs = (now - diag.lastArrival) * 1000;
-      if (gapMs < diag.minGapMs) diag.minGapMs = gapMs;
-      if (gapMs > diag.maxGapMs) diag.maxGapMs = gapMs;
-    }
-    diag.lastArrival = now;
-    if (nextStartTime < now) {
-      diag.fellBehindCount++;
-      console.warn(`[audio-diag] FELL BEHIND by ${((now - nextStartTime) * 1000).toFixed(1)}ms - chunk #${diag.chunkCount}`);
-    }
-    if (nextStartTime > now + MAX_SCHEDULE_AHEAD) {
-      diag.resetCount++;
-      console.warn(`[audio-diag] SCHEDULE RESET - was ${((nextStartTime - now) * 1000).toFixed(1)}ms ahead - chunk #${diag.chunkCount}`);
-    }
-    if (now - diag.lastSummary > 2) {
-      console.log(`[audio-diag] summary: ${diag.chunkCount} chunks, ${diag.fellBehindCount} fell-behind, ${diag.resetCount} resets, gap range ${diag.minGapMs.toFixed(1)}-${diag.maxGapMs.toFixed(1)}ms, this chunk had ${nSamples} samples`);
-      diag.lastSummary = now;
-      diag.minGapMs = Infinity;
-      diag.maxGapMs = 0;
-    }
-    // --- end diagnostic instrumentation ---
     if (nextStartTime < now) nextStartTime = now + SCHEDULE_LOOKAHEAD;
     if (nextStartTime > now + MAX_SCHEDULE_AHEAD) nextStartTime = now + SCHEDULE_LOOKAHEAD;
     source.start(nextStartTime);
     nextStartTime += buffer.duration;
   }
-
-  // --- Temporary diagnostic: export the raw capture above as a real .wav
-  // file, playable in any independent tool (Audacity, VLC, etc.) -
-  // entirely outside this page's own WebAudio pipeline. If the buzz is
-  // audible in THIS file, it's baked into the data the server sends,
-  // not introduced by live browser playback. Call from the console:
-  //   __downloadAudioCapture()
-  function _buildWavFromInt8Chunks(chunks, sampleRate) {
-    const totalBytes = chunks.reduce((n, c) => n + c.length, 0);
-    const numChannels = 2;
-    const bitsPerSample = 8;
-    const byteRate = sampleRate * numChannels * (bitsPerSample / 8);
-    const blockAlign = numChannels * (bitsPerSample / 8);
-    const buffer = new ArrayBuffer(44 + totalBytes);
-    const view = new DataView(buffer);
-    function writeString(offset, str) {
-      for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
-    }
-    writeString(0, "RIFF");
-    view.setUint32(4, 36 + totalBytes, true);
-    writeString(8, "WAVE");
-    writeString(12, "fmt ");
-    view.setUint32(16, 16, true);
-    view.setUint16(20, 1, true); // PCM
-    view.setUint16(22, numChannels, true);
-    view.setUint32(24, sampleRate, true);
-    view.setUint32(28, byteRate, true);
-    view.setUint16(32, blockAlign, true);
-    view.setUint16(34, bitsPerSample, true);
-    writeString(36, "data");
-    view.setUint32(40, totalBytes, true);
-
-    let offset = 44;
-    for (const chunk of chunks) {
-      for (let i = 0; i < chunk.length; i++) {
-        // WAV's 8-bit PCM is UNSIGNED (0-255, 128=silence) - the server
-        // sends SIGNED int8 (-128 to 127, 0=silence). Converting here so
-        // the exported file is a fair, correctly-decoded representation -
-        // a naive raw byte copy would itself introduce a DC-offset/
-        // distortion from the format mismatch alone, which would give a
-        // false positive completely unrelated to the actual question.
-        view.setUint8(offset++, (chunk[i] + 128) & 0xff);
-      }
-    }
-    return buffer;
-  }
-
-  window.__downloadAudioCapture = function () {
-    const chunks = window.__audioCapture || [];
-    if (chunks.length === 0) {
-      console.warn("No audio captured yet - play for a few seconds first, then try again.");
-      return;
-    }
-    const wavBuffer = _buildWavFromInt8Chunks(chunks, SAMPLE_RATE);
-    const blob = new Blob([wavBuffer], { type: "audio/wav" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "raw_audio_capture.wav";
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
-    console.log(`Downloaded raw_audio_capture.wav - ${chunks.length} chunks, ${(chunks.reduce((n, c) => n + c.length, 0) / (SAMPLE_RATE * 2)).toFixed(1)}s captured.`);
-  };
 
   // --- WebSocket (video + audio in, button presses out) ---------------------
 

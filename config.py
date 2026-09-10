@@ -35,7 +35,41 @@ MSG_AUDIO = b"\x02"
 # is validated against it); 24000 also works. Only values where
 # rate % 60 == 0 are accepted by PyBoy - e.g. 44800 is NOT valid and will
 # fail an internal assertion.
-SOUND_SAMPLE_RATE = 24000  # Hz - must divide evenly into 60 (48000 overran on this hardware)
+#
+# EXPERIMENTAL, temporary bump from 24000 to 36000 - being tried to help
+# diagnose a reported buzz on the web version's audio that ISN'T present
+# via play_headed.py's native SDL2 output. That comparison turned out not
+# to be a clean one though: play_headed.py never sets sound_sample_rate,
+# so it runs at PyBoy's 48000 default, not the 24000 this worker forces -
+# a real, previously undetected difference between the two, not just
+# "streaming vs local playback." 24kHz's Nyquist limit (12kHz) is well
+# within range for some Game Boy leads/noise-channel effects, so aliasing
+# specifically at this rate is plausible. Not jumping straight back to
+# 48000 though - the "overran on this hardware" note below is a genuine,
+# previously-confirmed finding on this exact Pi, not a guess, and buffer
+# underruns from the worker failing to keep up in real time can ALSO
+# sound like buzzing/crackling, which would confuse this test rather than
+# resolve it. 36000 is a real midpoint - closer to full quality, still a
+# meaningful step down from the rate that's documented to have caused
+# problems before.
+SOUND_SAMPLE_RATE = 36000  # Hz - must divide evenly into 60 (48000 overran on this hardware)
+
+# PyBoy's own master volume (0-100), applied to its internal 4-channel
+# mix BEFORE it's ever reduced to int8 samples and sent out. Was 100
+# (maximum, zero headroom) - the Game Boy's 4 sound channels are mixed
+# together internally, and int8 has very little range (256 levels) to
+# begin with, so any moment several channels constructively peak
+# together at full volume pushes the combined mix past what int8 can
+# represent, heard as an intermittent buzz riding on top of certain
+# tones/chords specifically, not a constant hum - it only appears when
+# that peak-overlap actually happens, not all the time. This can't be
+# fixed client-side (turning down playback volume after the fact just
+# makes an already-clipped waveform quieter, not clean) - the headroom
+# has to exist before the mixed signal is ever reduced to int8, which is
+# what this value controls. 85 leaves a reasonable margin below full
+# scale; lower it further (e.g. 70) if buzzing is still audible on
+# particularly dense/loud passages.
+SOUND_VOLUME = 85
 
 # Sending one WebSocket audio message per emulator tick (~16.7ms) means the
 # browser has to splice ~60 tiny AudioBuffers together per second, and any
