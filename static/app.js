@@ -44,6 +44,7 @@
   const ctx = canvas.getContext("2d", { alpha: false });
   const canvasGL = document.getElementById("screenGL");
   const gameStage = document.getElementById("gameStage");
+  const toggleControlsBtn = document.getElementById("toggleControlsBtn");
   const imageData = ctx.createImageData(WIDTH, HEIGHT);
 
   // --- WebGL video filters (Off / Smooth / Smart smooth) -----------------
@@ -398,9 +399,35 @@
     }
   }
 
+  let controlsHidden = false;
+
+  function setControlsHidden(hiddenState) {
+    controlsHidden = hiddenState;
+    gameStage.classList.toggle("controls-hidden", hiddenState);
+    toggleControlsBtn.textContent = hiddenState ? "Show controls" : "Hide controls";
+    toggleControlsBtn.setAttribute("aria-pressed", hiddenState ? "true" : "false");
+  }
+
   function bindFullscreen() {
     canvas.addEventListener("dblclick", toggleFullscreen);
     canvasGL.addEventListener("dblclick", toggleFullscreen);
+
+    // Only meaningful while actually fullscreen - outside of it, the
+    // on-screen controls are part of the normal page layout, not an
+    // overlay, so there's nothing to hide/show in the first place.
+    const updateToggleVisibility = () => {
+      const isFullscreen = !!(document.fullscreenElement || document.webkitFullscreenElement);
+      toggleControlsBtn.hidden = !isFullscreen;
+      // Leaving fullscreen with controls hidden would strand the player
+      // with an invisible D-pad back in the normal page layout - reset
+      // on the way out rather than carrying that state somewhere it was
+      // never meant to apply.
+      if (!isFullscreen && controlsHidden) setControlsHidden(false);
+    };
+    document.addEventListener("fullscreenchange", updateToggleVisibility);
+    document.addEventListener("webkitfullscreenchange", updateToggleVisibility);
+
+    toggleControlsBtn.addEventListener("click", () => setControlsHidden(!controlsHidden));
   }
 
   // Fills the screen with the same off-color as the canvas's own CSS

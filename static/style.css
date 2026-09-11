@@ -526,6 +526,20 @@ body {
   cursor: pointer;
 }
 
+/* Overrides the auto margin above specifically for this button - that
+   margin exists to push #requestControlBtn/#grantControlBtn (the only
+   other things sharing this class) to the far right of the status bar.
+   In fullscreen, the far right of that bar is the SAME general area
+   .emulator-controls occupies (top: 40px; right: 10px) - and since that
+   group has a higher z-index (10 vs this bar's 5), it would render
+   directly on top of this button if the two ever spatially overlap
+   there, hiding it completely rather than just looking a bit crowded.
+   Sitting inline with the status text instead avoids that area
+   altogether. */
+#toggleControlsBtn {
+  margin-left: 8px;
+}
+
 .control-action-btn.grant {
   background: var(--gb-purple);
   color: #f7d7e7;
@@ -946,6 +960,33 @@ body.viewer-mode #bufferRange {
   justify-content: center;
   margin: 4px 0 2px;
   flex: 0 0 auto;
+}
+
+/* Normal (non-fullscreen) mode only - lets #gameStage grow to fill
+   whatever vertical space .shell's own flex column has left over. On a
+   short mobile viewport this makes no visible difference (there's
+   nothing extra to fill), but on a tall browser window (a wide desktop
+   window, for instance) the player's natural content height can be
+   well under the window's, and without this the whole control section
+   just sits packed near the top with a large dead gap below it - .shell
+   is display:flex;flex-direction:column with no justify-content set,
+   which defaults to flex-start (pack everything to the start, leaving
+   any leftover space after the last child, not distributed anywhere
+   useful). */
+#gameStage:not(:fullscreen) {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+}
+
+/* Absorbs that leftover space right here (auto margins on a flex
+   child grow to fill available space) - pushes .emulator-controls,
+   and everything after it in normal document flow (the D-pad/face
+   buttons, Select/Start), down as one group, rather than spreading
+   gaps evenly between every section (which would put odd space
+   between the header and screen too, not just below the controls). */
+#gameStage:not(:fullscreen) .emulator-controls {
+  margin-top: auto;
 }
 
 .ff-btn {
@@ -1496,7 +1537,7 @@ body.viewer-mode #bufferRange {
   top: 0;
   left: 0;
   right: 0;
-  z-index: 5;
+  z-index: 15;
   background: rgba(0, 0, 0, 0.45);
   padding: 6px 10px;
   margin: 0;
@@ -1642,6 +1683,24 @@ body.viewer-mode #bufferRange {
    matters here is whether there's enough horizontal gap between the
    D-pad and A/B for Select/Start to fit without a real vertical
    stagger, which is a shape question, not a size one. */
+
+/* "Hide controls" toggle (screen-meta's own button, shown only while
+   fullscreen - see setControlsHidden in app.js) - hides the on-screen
+   D-pad/face-buttons/Select-Start overlay AND the fast-forward/reset/
+   mute row, for anyone using a physical controller or keyboard who'd
+   rather see the game without translucent buttons over it. The toggle
+   button itself lives in .screen-meta, not inside any of these groups,
+   specifically so hiding the controls can never also hide the one
+   button that brings them back. */
+#gameStage.controls-hidden:fullscreen .controls,
+#gameStage.controls-hidden:fullscreen .system-buttons,
+#gameStage.controls-hidden:fullscreen .emulator-controls,
+#gameStage.controls-hidden:-webkit-full-screen .controls,
+#gameStage.controls-hidden:-webkit-full-screen .system-buttons,
+#gameStage.controls-hidden:-webkit-full-screen .emulator-controls {
+  display: none;
+}
+
 @media (max-width: 700px) {
   #gameStage:fullscreen .system-buttons,
   #gameStage:-webkit-full-screen .system-buttons {
