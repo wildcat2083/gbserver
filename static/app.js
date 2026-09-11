@@ -72,7 +72,7 @@
   const SMOOTHNESS_KEY = "gbserver.smartSmoothness";
   let smartSmoothness = 2.0; // matches the value this used to be hardcoded at
   const THEME_KEY = "gbserver.theme";
-  const VALID_THEMES = ["dmg", "pocket", "grape", "light-yellow", "dark"];
+  const VALID_THEMES = ["dmg", "pocket", "grape", "light-yellow", "dark", "clearshell"];
   let glState = null; // set up lazily on first non-"off" selection
 
   const GL_VERTEX_SRC = `

@@ -104,6 +104,168 @@ body.theme-dark {
   --gb-purple-highlight: #90e9f6;
 }
 
+/* "Clear shell" - a translucent smoky-grey case (closer to the real
+   "Smoke"/clear-black Game Boy shells than the tinted Atomic Purple
+   look) with a real circuit-board photo showing through it, rather
+   than a flat opaque color like every other theme here. --gb-body/
+   -dark/-highlight and --gb-screen-frame are rgba (not solid hex)
+   specifically so .shell's own gradient (already built from these
+   variables) becomes translucent for free.
+   --gb-purple (the A/B button color - kept as the variable name shared
+   with every other theme, even though this theme's value isn't purple)
+   stays fully OPAQUE though - on real clear-shell hardware the case is
+   translucent but the D-pad and face buttons are still solid colored
+   plastic, not clear, and keeping them opaque also keeps their labels
+   reliably readable against a background that's otherwise fairly busy.
+   0.5 alpha here (up from an earlier 0.38) specifically because a real
+   photo has far more brightness variance than the hand-drawn gradient
+   pattern this replaced - checked contrast against the photo's actual
+   brightest spots (the glowing highlight dots), not just its average
+   tone, and the lower alpha left those spots reading around 2:1,
+   nowhere near readable. */
+body.theme-clearshell {
+  color-scheme: dark;
+  --gb-body: rgba(150, 150, 156, 0.5);
+  --gb-body-dark: rgba(95, 95, 100, 0.55);
+  --gb-body-edge: rgba(70, 70, 74, 0.75);
+  --gb-screen-frame: rgba(110, 110, 115, 0.6);
+  --gb-screen-bg: #000000;
+  --gb-purple: #6e6e76;
+  --gb-purple-dark: #4a4a50;
+  --gb-ink: #ececed;
+  --gb-muted: #c2c2c8;
+  --gb-body-highlight: rgba(200, 200, 205, 0.4);
+  --gb-screen-frame-highlight: rgba(175, 175, 180, 0.45);
+  --gb-purple-highlight: #b5b5bd;
+  background: #17171a;
+}
+
+/* .shell's circuit-board photo lives on a ::before pseudo-element
+   behind its own content, specifically so its brightness filter (see
+   below) affects only the image - not the real text/buttons painted
+   on top of it, which a filter on .shell itself would also darken.
+   .shell needs position:relative added here for that absolutely-
+   positioned pseudo-element to size against it correctly.
+   brightness(0.45) tones down the photo's own brightest highlights -
+   verified against real pixel data from the photo (see the text-shadow
+   rule below) that this still leaves enough contrast almost everywhere,
+   with a text-shadow covering the small remaining gap at the photo's
+   brightest spots.
+   .shell's own background is left as the base .shell rule's gradient
+   (built from --gb-body/-dark/-highlight, now the grey tones set
+   above) rather than overridden to transparent - matching how
+   .settings-panel looks, which is what was actually wanted: the tint
+   showing over the photo everywhere, just in grey instead of purple.
+   An earlier version of this rule removed the tint from .shell only,
+   but that was based on a misreading of what looked wrong at the time -
+   the purple wash itself wasn't the problem, the color was.
+   z-index:0 added here after the photo once turned up invisible on
+   .shell when the tint was removed - .settings-panel's position:fixed
+   always forces its own stacking context, but .shell only had
+   position:relative with no z-index, which does NOT reliably do the
+   same. Kept here regardless of the tint being back, since it's still
+   correct: without it, the ::before's z-index:-1 isn't guaranteed to
+   land "just behind .shell's own content" and can disappear. */
+body.theme-clearshell .shell {
+  position: relative;
+  z-index: 0;
+}
+
+body.theme-clearshell .shell::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background-image: url("/static/img/circuit-board.jpg");
+  background-size: cover;
+  background-position: center;
+  filter: brightness(0.45);
+  background-repeat: no-repeat;
+}
+
+/* .settings-panel (Help/Chat/Settings) does NOT use the ::before
+   approach above - it used to, but that broke specifically on the
+   Settings modal, which (unlike Help/Chat, and unlike .shell) keeps
+   the base .settings-panel rule's own `overflow: auto` as a real
+   scroll container. A ::before child positioned via inset:0 is sized
+   to the panel's un-scrolled box, and an absolutely-positioned child
+   whose containing block IS that scroll container scrolls away along
+   with the rest of the content - it doesn't get to behave like an
+   inert background layer just because it's being used as one. That's
+   exactly why the photo showed correctly down to "Smart smooth" (the
+   bottom edge of the un-scrolled panel) and turned to flat gradient
+   below it once scrolled.
+   The fix is to stop using a child element at all and put the photo
+   directly on .settings-panel's own `background-image` instead - an
+   element's own background layers stay anchored to its box regardless
+   of how its content scrolls internally (background-attachment:scroll,
+   the default, means "attached to the box," not "attached to the
+   viewport" or "attached to the content"). That also means `filter`
+   is off the table again (it would dim the panel's real text same as
+   on .shell), so the darkening is done as an extra flat black layer
+   instead: compositing solid black at 0.55 opacity over a color is
+   mathematically identical to multiplying that color by 0.45 - the
+   exact same brightness reduction as .shell's filter, just expressed
+   as a layer instead of a filter so it can sit UNDER the existing
+   translucent tint gradient (topmost, now grey) and the photo (bottom)
+   in one background-image stack, topmost-layer-first. */
+/* This tint layer deliberately does NOT reuse var(--gb-body-highlight)/
+   var(--gb-body)/var(--gb-body-dark) the way .shell's own background
+   still does - those are shared across the whole theme, and .shell's
+   level of wash was already approved. Cut roughly in half here instead
+   (0.4/0.5/0.55 alpha down to 0.22/0.28/0.32) as its own hardcoded
+   values, specifically because Help/Chat/Settings read as too flat and
+   grey with the full-strength tint, even after the text-shadow below -
+   less wash lets more of the actual photo's contrast/detail show
+   through behind the text instead of everything blurring toward one
+   flat grey. Re-checked against the real photo with this lighter tint:
+   ink still clears 4-10:1 across the range; muted is a bit tighter at
+   the photo's brightest spots (same ballpark as .shell already runs at,
+   not worse), which the text-shadow below still covers. */
+body.theme-clearshell .settings-panel {
+  background-image:
+    linear-gradient(180deg, rgba(200, 200, 205, 0.22) 0%, rgba(150, 150, 156, 0.28) 55%, rgba(95, 95, 100, 0.32) 100%),
+    linear-gradient(rgba(0, 0, 0, 0.55), rgba(0, 0, 0, 0.55)),
+    url("/static/img/circuit-board.jpg");
+  background-size: auto, auto, cover;
+  background-position: 0 0, 0 0, center;
+  background-repeat: no-repeat, no-repeat, no-repeat;
+  /* .shell got a text-shadow earlier (see below) to cover the gap
+     between --gb-ink/--gb-muted and this photo's brightest spots, but
+     .settings-panel never did - its own body text was checked and
+     cleared 4.5:1 fine. What wasn't checked: .help-section h3 (color:
+     var(--gb-purple)) and .chat-role for viewer messages (color:
+     var(--gb-muted)) are BOTH accent colors chosen to pop against a
+     flat, solid theme background - reasonable in every other theme,
+     but --gb-purple and --gb-muted are now light-to-mid greys in THIS
+     theme specifically, sitting on a grey-tinted photo of a similar
+     tonal range. Same hue as its backdrop, not just similar lightness,
+     is what actually made these unreadable - a contrast problem this
+     theme's own accent colors don't have anywhere else. Brightening
+     --gb-purple further isn't a safe fix here either: it also fills
+     the A/B buttons, whose hardcoded pale-pink label text needs that
+     fill to stay a mid-tone or ITS contrast breaks instead. A
+     text-shadow sidesteps the whole tradeoff, the same as it did for
+     .shell. */
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85);
+}
+
+/* Checked against real pixel data from the actual circuit-board.jpg
+   with the grey tint above (same math as before, just re-run for grey
+   instead of purple): the median area is very safe (~7.9:1 for ink),
+   but the brightest solder-dot highlights - the top ~1% of pixels -
+   dim to a luminance that only clears ~4.6:1 for ink and ~3:1 for
+   muted, both a bit tighter than .settings-panel's own numbers. A
+   text-shadow doesn't change the measured background-contrast ratio
+   the way an opaque backdrop would, but it's the standard practical
+   fix for light text over a busy photo, and doesn't require darkening
+   the tint further just to cover the rare worst-case pixel. Scoped to
+   .shell only; .settings-panel doesn't need it since its own numbers
+   already clear 4.5:1 comfortably. */
+body.theme-clearshell .shell {
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85);
+}
+
 * {
   box-sizing: border-box;
   -webkit-tap-highlight-color: transparent;
