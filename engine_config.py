@@ -1,17 +1,8 @@
-"""
-Optional alternate emulation engine (boytacean) detection, and the
-per-ROM engine-choice persistence (which engine a given ROM file should
-run on - "pyboy" or "boytacean"), stored as a small flat JSON map.
-"""
 import json
 
 from config import ENGINE_OVERRIDES_PATH, _engine_overrides_lock
 
-# boytacean is an OPTIONAL alternate engine - opt-in per ROM (see
-# ENGINE_OVERRIDES below), never the default. Its Python bindings currently
-# expose no audio API at all, so ROMs running on it stream video only.
-# It's not installed by default; the server works identically without it,
-# with every ROM simply staying on PyBoy.
+
 try:
     from boytacean.pyboy import PyBoyV2 as Boytacean
     BOYTACEAN_AVAILABLE = True

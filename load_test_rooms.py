@@ -1,25 +1,3 @@
-#!/usr/bin/env python3
-"""
-load_test_rooms.py - creates N real private rooms and genuinely loads a
-ROM into each one, so their tick loops actually run - for watching real
-CPU/memory load build up in htop.
-
-This replaces an earlier bash+curl version that silently failed: /api/play
-requires being recognized as the room's controller (see controller_check
-in routes.py), which is determined by who's connected via WebSocket - a
-plain curl POST with no prior WS connection just gets rejected. This
-version connects via WebSocket first (which is what a real client always
-does), then closes that connection immediately after - the room keeps
-ticking afterward regardless, since only the shared game auto-stops when
-empty; private rooms don't (a deliberate difference built earlier in this
-project, so someone can step away from their own room briefly without it
-stopping).
-
-Run this ON cm-pi itself (hits localhost, bypassing nginx/network
-entirely, so you're purely measuring the Pi's own capacity).
-
-Usage: python3 load_test_rooms.py [number_of_rooms]
-"""
 import json
 import sys
 import time
@@ -27,7 +5,7 @@ import urllib.error
 import urllib.request
 
 try:
-    import websocket  # pip install websocket-client --break-system-packages
+    import websocket
 except ImportError:
     print("Missing dependency - run this first:")
     print("  pip install websocket-client --break-system-packages")
@@ -78,14 +56,10 @@ def main():
             break
         room_code = result["room"]
 
-        # Connect via WebSocket just long enough to register as this
-        # room's controller (add_client() fires the moment the connection
-        # is accepted server-side) - then close it. The room keeps ticking
-        # afterward regardless of whether anyone's still connected.
         ws = websocket.create_connection(
             f"{WS_URL}/r/{room_code}/ws?client_id={client_id}", timeout=5
         )
-        time.sleep(0.2)  # give the server a moment to actually register the client
+        time.sleep(0.2)
 
         try:
             api_post(
@@ -100,7 +74,7 @@ def main():
         finally:
             ws.close()
 
-        time.sleep(0.5)  # stagger slightly so you can watch CPU climb in real time
+        time.sleep(0.5)
 
     print()
     print("Done. Watch htop now - press the number keys or check per-core view specifically.")

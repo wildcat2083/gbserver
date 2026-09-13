@@ -1,9 +1,5 @@
 :root {
-  /* Tells the browser this page is designed for light mode, so it doesn't
-     apply its own dark-mode styling to native form controls (inputs,
-     etc.) when the OS/browser prefers dark - that can otherwise silently
-     make an input's text render in a color that clashes with our own
-     background, even though our CSS never asked for that. */
+
   color-scheme: light;
 
   --gb-body: #c4c4b0;
@@ -15,28 +11,11 @@
   --gb-purple-dark: #5c123c;
   --gb-ink: #2a2a22;
   --gb-muted: #4a4a3a;
-  /* Lighter "highlight" shades used only as gradient start-points (glossy
-     panel edges, the radial highlight spot on face buttons) - kept as
-     separate variables rather than hardcoded hex values directly in each
-     gradient, specifically because a hardcoded highlight only ever looks
-     right against the DEFAULT palette's own base color. Mixing one
-     theme's hardcoded highlight with a DIFFERENT theme's base color
-     (e.g. this pink highlight blending into Grape's gold accent instead
-     of DMG's own magenta) is exactly what produced the incoherent-looking
-     gradient in the first place. */
+
   --gb-body-highlight: #d2d2be;
   --gb-screen-frame-highlight: #7a825f;
   --gb-purple-highlight: #c94a84;
 }
-
-/* Alternate color palettes for the device shell - selectable in Settings
-   (see #themeSelect / applyTheme() in app.js). Each one overrides every
-   variable defined in :root above via a body class, so anything already
-   styled with var(--gb-*) picks up the new palette automatically with no
-   other changes needed. Every body/ink text pairing below was checked
-   against WCAG's 4.5:1 contrast minimum for normal text, not just chosen
-   by eye - "GBC Grape" originally failed this (3.75:1) until its ink and
-   body were both adjusted specifically to clear it. */
 
 body.theme-pocket {
   --gb-body: #b0b8c4;
@@ -84,11 +63,7 @@ body.theme-light-yellow {
 }
 
 body.theme-dark {
-  /* Tells the browser this specific theme IS designed for dark
-     backgrounds, overriding the light-mode default set in :root above -
-     without this, native form controls (the theme/filter dropdowns, the
-     range sliders) would keep rendering with light-mode styling even
-     though the page around them just went dark, clashing badly. */
+
   color-scheme: dark;
   --gb-body: #2e2e34;
   --gb-body-dark: #232328;
@@ -104,27 +79,10 @@ body.theme-dark {
   --gb-purple-highlight: #90e9f6;
 }
 
-/* "Clear shell" - a translucent smoky-grey case (closer to the real
-   "Smoke"/clear-black Game Boy shells than the tinted Atomic Purple
-   look) with a real circuit-board photo showing through it, rather
-   than a flat opaque color like every other theme here. --gb-body/
-   -dark/-highlight and --gb-screen-frame are rgba (not solid hex)
-   specifically so .shell's own gradient (already built from these
-   variables) becomes translucent for free.
-   --gb-purple (the A/B button color - kept as the variable name shared
-   with every other theme, even though this theme's value isn't purple)
-   stays fully OPAQUE though - on real clear-shell hardware the case is
-   translucent but the D-pad and face buttons are still solid colored
-   plastic, not clear, and keeping them opaque also keeps their labels
-   reliably readable against a background that's otherwise fairly busy.
-   0.32 alpha here (previously 0.55, at the same level .settings-panel
-   already used) - matching Help/Chat/Settings' lighter tint on .shell
-   too now, so all three panels read the same way rather than .shell
-   standing out as more opaque. */
 body.theme-clearshell {
   color-scheme: dark;
-  --gb-body: rgba(150, 150, 156, 0.28);
-  --gb-body-dark: rgba(95, 95, 100, 0.32);
+  --gb-body: rgba(150, 150, 156, 0.5);
+  --gb-body-dark: rgba(95, 95, 100, 0.55);
   --gb-body-edge: rgba(70, 70, 74, 0.75);
   --gb-screen-frame: rgba(110, 110, 115, 0.6);
   --gb-screen-bg: #000000;
@@ -132,38 +90,12 @@ body.theme-clearshell {
   --gb-purple-dark: #4a4a50;
   --gb-ink: #ececed;
   --gb-muted: #c2c2c8;
-  --gb-body-highlight: rgba(200, 200, 205, 0.22);
+  --gb-body-highlight: rgba(200, 200, 205, 0.4);
   --gb-screen-frame-highlight: rgba(175, 175, 180, 0.45);
   --gb-purple-highlight: #b5b5bd;
   background: #17171a;
 }
 
-/* .shell's circuit-board photo lives on a ::before pseudo-element
-   behind its own content, specifically so its brightness filter (see
-   below) affects only the image - not the real text/buttons painted
-   on top of it, which a filter on .shell itself would also darken.
-   .shell needs position:relative added here for that absolutely-
-   positioned pseudo-element to size against it correctly.
-   brightness(0.45) tones down the photo's own brightest highlights -
-   verified against real pixel data from the photo (see the text-shadow
-   rule below) that this still leaves enough contrast almost everywhere,
-   with a text-shadow covering the small remaining gap at the photo's
-   brightest spots.
-   .shell's own background is left as the base .shell rule's gradient
-   (built from --gb-body/-dark/-highlight, now the grey tones set
-   above) rather than overridden to transparent - matching how
-   .settings-panel looks, which is what was actually wanted: the tint
-   showing over the photo everywhere, just in grey instead of purple.
-   An earlier version of this rule removed the tint from .shell only,
-   but that was based on a misreading of what looked wrong at the time -
-   the purple wash itself wasn't the problem, the color was.
-   z-index:0 added here after the photo once turned up invisible on
-   .shell when the tint was removed - .settings-panel's position:fixed
-   always forces its own stacking context, but .shell only had
-   position:relative with no z-index, which does NOT reliably do the
-   same. Kept here regardless of the tint being back, since it's still
-   correct: without it, the ::before's z-index:-1 isn't guaranteed to
-   land "just behind .shell's own content" and can disappear. */
 body.theme-clearshell .shell {
   position: relative;
   z-index: 0;
@@ -177,50 +109,10 @@ body.theme-clearshell .shell::before {
   background-image: url("/static/img/circuit-board.jpg");
   background-size: cover;
   background-position: center;
-  background-attachment: fixed;
   filter: brightness(0.45);
   background-repeat: no-repeat;
 }
 
-/* .settings-panel (Help/Chat/Settings) does NOT use the ::before
-   approach above - it used to, but that broke specifically on the
-   Settings modal, which (unlike Help/Chat, and unlike .shell) keeps
-   the base .settings-panel rule's own `overflow: auto` as a real
-   scroll container. A ::before child positioned via inset:0 is sized
-   to the panel's un-scrolled box, and an absolutely-positioned child
-   whose containing block IS that scroll container scrolls away along
-   with the rest of the content - it doesn't get to behave like an
-   inert background layer just because it's being used as one. That's
-   exactly why the photo showed correctly down to "Smart smooth" (the
-   bottom edge of the un-scrolled panel) and turned to flat gradient
-   below it once scrolled.
-   The fix is to stop using a child element at all and put the photo
-   directly on .settings-panel's own `background-image` instead - an
-   element's own background layers stay anchored to its box regardless
-   of how its content scrolls internally (background-attachment:scroll,
-   the default, means "attached to the box," not "attached to the
-   viewport" or "attached to the content"). That also means `filter`
-   is off the table again (it would dim the panel's real text same as
-   on .shell), so the darkening is done as an extra flat black layer
-   instead: compositing solid black at 0.55 opacity over a color is
-   mathematically identical to multiplying that color by 0.45 - the
-   exact same brightness reduction as .shell's filter, just expressed
-   as a layer instead of a filter so it can sit UNDER the existing
-   translucent tint gradient (topmost, now grey) and the photo (bottom)
-   in one background-image stack, topmost-layer-first. */
-/* This tint layer deliberately does NOT reuse var(--gb-body-highlight)/
-   var(--gb-body)/var(--gb-body-dark) - those hold .shell's heavier
-   tint. This panel gets its own hardcoded, lighter values instead
-   (0.22/0.28/0.32 alpha), so Help/Chat/Settings read closer to "none" -
-   more of the actual photo's contrast/detail shows through behind the
-   text instead of a flat wash. A brief detour swapped this the other
-   way around (this panel heavier, .shell lighter), which looked
-   backwards - washed white here, circuit board barely visible - and
-   wasn't what was actually wanted; this restores the original pairing.
-   Re-checked against the real photo with this lighter tint: ink still
-   clears 4-10:1 across the range; muted is a bit tighter at the
-   photo's brightest spots (same ballpark as .shell runs at, not
-   worse), which the text-shadow below still covers. */
 body.theme-clearshell .settings-panel {
   background-image:
     linear-gradient(180deg, rgba(200, 200, 205, 0.22) 0%, rgba(150, 150, 156, 0.28) 55%, rgba(95, 95, 100, 0.32) 100%),
@@ -228,54 +120,11 @@ body.theme-clearshell .settings-panel {
     url("/static/img/circuit-board.jpg");
   background-size: auto, auto, cover;
   background-position: 0 0, 0 0, center;
-  background-attachment: scroll, scroll, fixed;
   background-repeat: no-repeat, no-repeat, no-repeat;
-  /* background-attachment:fixed on just the photo layer (not the tint
-     or scrim layers above it) ties it to the viewport instead of this
-     panel's own box - the actual root cause of .shell and .settings-
-     panel looking inconsistent even with matched tint alpha: with
-     background-size:cover computed per-element, a narrow side panel
-     and the wide/tall shell each independently crop a DIFFERENT slice
-     of a photo that isn't uniformly bright, so they'd never quite
-     match no matter how carefully the alpha was tuned. Tying both to
-     the viewport instead makes every panel look through the same
-     consistent region of one shared "sheet", like windows into the
-     same backdrop rather than each sampling its own independent crop.
-     Fixed attachment also isn't affected by this panel's own internal
-     overflow:auto scrolling, same guarantee "scroll" attachment gave
-     before, just anchored to the viewport instead of the local box. */
-  /* .shell got a text-shadow earlier (see below) to cover the gap
-     between --gb-ink/--gb-muted and this photo's brightest spots, but
-     .settings-panel never did - its own body text was checked and
-     cleared 4.5:1 fine. What wasn't checked: .help-section h3 (color:
-     var(--gb-purple)) and .chat-role for viewer messages (color:
-     var(--gb-muted)) are BOTH accent colors chosen to pop against a
-     flat, solid theme background - reasonable in every other theme,
-     but --gb-purple and --gb-muted are now light-to-mid greys in THIS
-     theme specifically, sitting on a grey-tinted photo of a similar
-     tonal range. Same hue as its backdrop, not just similar lightness,
-     is what actually made these unreadable - a contrast problem this
-     theme's own accent colors don't have anywhere else. Brightening
-     --gb-purple further isn't a safe fix here either: it also fills
-     the A/B buttons, whose hardcoded pale-pink label text needs that
-     fill to stay a mid-tone or ITS contrast breaks instead. A
-     text-shadow sidesteps the whole tradeoff, the same as it did for
-     .shell. */
+
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85);
 }
 
-/* Checked against real pixel data from the actual circuit-board.jpg
-   with the grey tint above (same math as before, just re-run for grey
-   instead of purple): the median area is very safe (~7.9:1 for ink),
-   but the brightest solder-dot highlights - the top ~1% of pixels -
-   dim to a luminance that only clears ~4.6:1 for ink and ~3:1 for
-   muted, both a bit tighter than .settings-panel's own numbers. A
-   text-shadow doesn't change the measured background-contrast ratio
-   the way an opaque backdrop would, but it's the standard practical
-   fix for light text over a busy photo, and doesn't require darkening
-   the tint further just to cover the rare worst-case pixel. Scoped to
-   .shell only; .settings-panel doesn't need it since its own numbers
-   already clear 4.5:1 comfortably. */
 body.theme-clearshell .shell {
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85);
 }
@@ -324,10 +173,6 @@ body {
   z-index: 60;
 }
 
-/* The `hidden` attribute's built-in browser rule is just `display: none` in
-   the browser's own stylesheet - any rule here that also sets `display`
-   (like the one above) silently overrides it, so the banner/shell would
-   show even while `hidden` was set. These make `hidden` win regardless. */
 .room-missing-banner[hidden],
 .shell[hidden] {
   display: none !important;
@@ -421,19 +266,15 @@ body {
   z-index: 40;
 }
 
-/* #vkeyboardBackdrop reuses .settings-backdrop above for its look, but
-   needs its own, higher z-index - it must sit above whichever panel it
-   was opened from (settings at 50, or the cheat panel at 65), same
-   reasoning as .vkeyboard itself just below cheat-panel's z-index so the
-   keyboard still renders on top of its own backdrop. */
 #vkeyboardBackdrop {
   z-index: 68;
 }
 
 .settings-panel {
   position: fixed;
-  inset: 0;
-  margin: auto;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
   width: min(92vw, 380px);
   max-height: min(80vh, 520px);
   overflow: auto;
@@ -445,15 +286,6 @@ body {
   box-shadow: 0 18px 40px rgba(0, 0, 0, 0.35);
 }
 
-/* Strong, consistent focus indicator for every focusable control inside
-   the settings panel - covers plain buttons, checkboxes, range sliders,
-   and the label-styled "buttons" (Add ROM to library / Upload .state),
-   none of which had any explicit focus styling before this at all.
-   Written broadly enough to also apply to .rom-search/.rom-select/
-   .engine-select above without conflicting - their own rules just add a
-   matching border-color highlight on top of this. Uses the theme's own
-   accent color specifically so it stays clearly visible and on-brand
-   across every color palette, not just the default one. */
 .settings-panel button:focus,
 .settings-panel select:focus,
 .settings-panel input:focus,
@@ -462,21 +294,13 @@ body {
   outline-offset: 2px;
 }
 
-/* On-screen keyboard - a separate overlay, not nested inside
-   .settings-panel, so it needs its own matching focus-ring rule rather
-   than inheriting the one above. Grid navigation (see bindVirtualKeyboard
-   in app.js) drives this via real .focus() calls on each key, the same
-   approach as settings-panel navigation, so this same outline treatment
-   applies for free. */
 .vkeyboard {
   position: fixed;
   left: 50%;
   top: 50%;
   transform: translate(-50%, -50%);
   width: min(92vw, 420px);
-  /* Must sit above EVERY panel that can open it - originally only ever
-     opened from settings (z-index 50), but the cheat panel (65) can open
-     it too now, so it needs to clear that as well, not just settings. */
+
   z-index: 70;
   padding: 16px;
   border-radius: 16px;
@@ -701,16 +525,6 @@ body {
   cursor: pointer;
 }
 
-/* Overrides the auto margin above specifically for this button - that
-   margin exists to push #requestControlBtn/#grantControlBtn (the only
-   other things sharing this class) to the far right of the status bar.
-   In fullscreen, the far right of that bar is the SAME general area
-   .emulator-controls occupies (top: 40px; right: 10px) - and since that
-   group has a higher z-index (10 vs this bar's 5), it would render
-   directly on top of this button if the two ever spatially overlap
-   there, hiding it completely rather than just looking a bit crowded.
-   Sitting inline with the status text instead avoids that area
-   altogether. */
 #toggleControlsBtn {
   margin-left: 8px;
 }
@@ -726,9 +540,6 @@ body {
   50% { opacity: 0.6; }
 }
 
-/* Viewer mode: on-screen game buttons are grayed out and can't be tapped -
-   the server already rejects their input, this just avoids the misleading
-   press animation/haptic on a button that wouldn't do anything. */
 body.viewer-mode .dpad-btn,
 body.viewer-mode .face-btn,
 body.viewer-mode .sys-btn {
@@ -736,11 +547,6 @@ body.viewer-mode .sys-btn {
   pointer-events: none;
 }
 
-/* Same idea for the Settings actions that mutate the shared game - these
-   are the ones actually enforced server-side (controller_check in app.py);
-   graying them out here just matches the UI to that. ROM library upload is
-   deliberately NOT included - adding a ROM to the shared library doesn't
-   affect the currently-running game, so it stays open to everyone. */
 body.viewer-mode #romPlayBtn,
 body.viewer-mode #romResumeBtn,
 body.viewer-mode #romDeleteBtn,
@@ -893,11 +699,7 @@ body.viewer-mode #bufferRange {
 }
 
 .chat-form .cart-btn {
-  /* .cart-btn's base rule sets width:100% (correct for buttons that fill
-     their own row elsewhere, like Play/Delete) - inside this flex row that
-     fights with .chat-input's flex:1, starving the input down to almost
-     nothing. Reset it to a normal content-sized, non-growing, non-
-     shrinking button so the input gets all the remaining space instead. */
+
   width: auto;
   flex: 0 0 auto;
   padding: 9px 14px;
@@ -907,7 +709,7 @@ body.viewer-mode #bufferRange {
 
 #screen {
   display: block;
-  /* Prefer filling width; grow tall - up to ~66% of the viewport */
+
   width: min(100%, calc(66dvh * 160 / 144));
   height: auto;
   aspect-ratio: 160 / 144;
@@ -930,9 +732,7 @@ body.viewer-mode #bufferRange {
 
 .screen-wrap {
   position: relative;
-  /* Matches #screen/#screenGL's own sizing exactly, so wrapping them for
-     the connect-gate overlay below introduces no layout shift - the two
-     canvases just fill this container completely, same as before. */
+
   width: min(100%, calc(66dvh * 160 / 144));
   aspect-ratio: 160 / 144;
 }
@@ -953,14 +753,7 @@ body.viewer-mode #bufferRange {
 }
 
 .connect-gate[hidden] {
-  /* Without this, .connect-gate's own "display: flex" above has the
-     SAME specificity as the browser's built-in "[hidden] { display:
-     none }" rule, and since ours loads later in the cascade, it wins -
-     meaning setting .hidden = true in JS had no actual visual effect at
-     all, leaving this permanently visible even after a successful
-     connection. This rule's higher specificity (two selectors combined,
-     rather than either alone) is what actually makes the hidden
-     attribute work correctly here. */
+
   display: none;
 }
 
@@ -982,19 +775,11 @@ body.viewer-mode #bufferRange {
   box-shadow: 0 2px 0 var(--gb-purple-dark);
 }
 
-/* Both canvases set display:block unconditionally above, which - same as
-   .room-missing-banner/.shell elsewhere in this file - silently defeats
-   the [hidden] attribute's native display:none behavior. Without this,
-   JS setting canvas.hidden = true doesn't actually hide it, so the 2D and
-   WebGL canvases end up stacked on top of each other simultaneously. */
 #screen[hidden],
 #screenGL[hidden] {
   display: none !important;
 }
 
-/* Fullscreen: fill as much of the display as possible while keeping the
-   160:144 aspect ratio - the classic dual max-width/max-height trick,
-   since canvas doesn't support object-fit the way img/video do. */
 #screen:fullscreen,
 #screenGL:fullscreen {
   width: 100vw;
@@ -1137,29 +922,12 @@ body.viewer-mode #bufferRange {
   flex: 0 0 auto;
 }
 
-/* Normal (non-fullscreen) mode only - lets #gameStage grow to fill
-   whatever vertical space .shell's own flex column has left over. On a
-   short mobile viewport this makes no visible difference (there's
-   nothing extra to fill), but on a tall browser window (a wide desktop
-   window, for instance) the player's natural content height can be
-   well under the window's, and without this the whole control section
-   just sits packed near the top with a large dead gap below it - .shell
-   is display:flex;flex-direction:column with no justify-content set,
-   which defaults to flex-start (pack everything to the start, leaving
-   any leftover space after the last child, not distributed anywhere
-   useful). */
 #gameStage:not(:fullscreen) {
   display: flex;
   flex-direction: column;
   flex: 1;
 }
 
-/* Absorbs that leftover space right here (auto margins on a flex
-   child grow to fill available space) - pushes .emulator-controls,
-   and everything after it in normal document flow (the D-pad/face
-   buttons, Select/Start), down as one group, rather than spreading
-   gaps evenly between every section (which would put odd space
-   between the header and screen too, not just below the controls). */
 #gameStage:not(:fullscreen) .emulator-controls {
   margin-top: auto;
 }
@@ -1361,10 +1129,6 @@ body.viewer-mode #bufferRange {
   color: #7a1028;
 }
 
-/* "All rooms are full" is a bigger deal than a typical inline validation
-   error (nothing can be started at all, not just one field being wrong),
-   so it gets more visual weight than the generic .upload-msg.error style
-   used everywhere else - scoped to just this element specifically. */
 #createRoomMsg.error {
   font-size: 0.85rem;
   font-weight: 700;
@@ -1382,7 +1146,6 @@ body.viewer-mode #bufferRange {
   flex: 0 0 auto;
 }
 
-/* Short phones: keep screen dominant, tighten chrome */
 @media (max-height: 700px) {
   .brand-name {
     font-size: 1.05rem;
@@ -1427,7 +1190,6 @@ body.viewer-mode #bufferRange {
   }
 }
 
-/* Wider phones / desktop: roomier shell, bigger playfield */
 @media (min-width: 480px) {
   body {
     padding: 12px;
@@ -1442,26 +1204,15 @@ body.viewer-mode #bufferRange {
     box-shadow:
       inset 0 2px 0 rgba(255, 255, 255, 0.35),
       0 18px 40px rgba(0, 0, 0, 0.28);
-    /* A safety net, not the primary fix - this height is fixed, not a
-       minimum, so any content that doesn't fit (a future addition, an
-       unusually long chat name overflowing somewhere, etc.) would
-       otherwise silently overlap or spill past the shell's visible
-       bounds rather than being at all visible/scrollable. Exactly what
-       happened here: the "someone else is playing" notice added height
-       nothing had accounted for, squeezing the D-pad up into the banner
-       above it and pushing Select/Start past the bottom edge. */
+
     overflow-y: auto;
-    /* Scrolling itself stays functional (mouse wheel, touch, keyboard) -
-       only the visible scrollbar track/thumb is hidden, since this is a
-       device-shell illustration, not an actual scrolling page, and a
-       stray scrollbar breaks that illusion even when nothing's actually
-       being clipped enough to matter. */
-    scrollbar-width: none; /* Firefox */
-    -ms-overflow-style: none; /* older Edge/IE */
+
+    scrollbar-width: none;
+    -ms-overflow-style: none;
   }
 
   .shell::-webkit-scrollbar {
-    display: none; /* Chrome/Safari/Chromium Edge */
+    display: none;
   }
 
   #screen {
@@ -1490,12 +1241,6 @@ body.viewer-mode #bufferRange {
   }
 }
 
-/* Desktop: chat becomes a permanent sidebar to the right of the shell,
-   always visible, instead of the toggleable overlay used on narrower
-   screens (there isn't room for both side by side below this width).
-   #chatPanel is already a sibling of .shell in the DOM, so once it's
-   taken out of position:fixed here, body's flexbox lays it out as a
-   second column automatically - no HTML restructuring needed. */
 @media (min-width: 900px) {
   #chatBtn {
     display: none;
@@ -1510,27 +1255,17 @@ body.viewer-mode #bufferRange {
   }
 
   #chatPanel {
-    /* Overrides .settings-panel's fixed/centered-modal positioning.
-       Docked to the right edge of the VIEWPORT (not just placed next to
-       .shell in flex flow) so it reads as its own separate window, like a
-       real chat sidebar - independent of the shell's own centering.
-       display:flex here also overrides the [hidden] attribute's default
-       display:none - deliberately, so the panel stays visible regardless
-       of whatever open/closed state the (now-hidden) mobile toggle left
-       it in. Height is set in JS (syncChatPanelHeight) to exactly match
-       .shell's actual rendered height - flexbox align-items:stretch
-       turned out not to reliably produce equal heights here, so this is
-       measured and applied directly instead. */
+
     position: fixed;
     display: flex !important;
     flex-direction: column;
     left: auto;
     right: 32px;
-    top: 0;
-    bottom: 0;
-    margin: auto 0;
+    top: 50%;
+    transform: translateY(-50%);
     width: 320px;
     max-height: none;
+    margin: 0;
   }
 
   .chat-body {
@@ -1556,18 +1291,17 @@ body.viewer-mode #bufferRange {
   }
 
   #helpPanel {
-    /* Mirrors #chatPanel above, docked to the LEFT edge instead - same
-       reasoning throughout, just the opposite side. */
+
     position: fixed;
     display: flex !important;
     flex-direction: column;
     left: 32px;
     right: auto;
-    top: 0;
-    bottom: 0;
-    margin: auto 0;
+    top: 50%;
+    transform: translateY(-50%);
     width: 320px;
     max-height: none;
+    margin: 0;
   }
 
   .help-body {
@@ -1576,7 +1310,6 @@ body.viewer-mode #bufferRange {
   }
 }
 
-/* Cheat engine panel - hidden easter egg, revealed via Konami code */
 .cheat-panel {
   position: fixed;
   left: 50%;
@@ -1670,12 +1403,6 @@ body.viewer-mode #bufferRange {
   border-bottom: 1px solid rgba(0, 0, 0, 0.1);
 }
 
-/* Fullscreen overlay mode - #gameStage (screen + all on-screen controls)
-   is the actual fullscreen element now (see toggleFullscreen in app.js),
-   not just the bare canvas, specifically so a phone with no physical
-   controller has SOME way to press a button while fullscreen at all.
-   Everything below only applies while :fullscreen is actually active -
-   normal stacked layout the rest of the time, completely unaffected. */
 #gameStage:fullscreen,
 #gameStage:-webkit-full-screen {
   position: relative;
@@ -1690,9 +1417,6 @@ body.viewer-mode #bufferRange {
   margin: 0;
 }
 
-/* The canvas itself fills as much of the fullscreen viewport as it can
-   while keeping its aspect ratio - the decorative bezel padding/border
-   is dropped too, since it just eats into space the game could use. */
 #gameStage:fullscreen .screen-bezel,
 #gameStage:-webkit-full-screen .screen-bezel {
   background: none;
@@ -1722,16 +1446,7 @@ body.viewer-mode #bufferRange {
 
 #gameStage:fullscreen .screen-wrap,
 #gameStage:-webkit-full-screen .screen-wrap {
-  /* Simply fills the whole fullscreen viewport now - no more juggling
-     height/max-width/aspect-ratio against each other, which is exactly
-     what caused the stretching: on a portrait phone, a 160:144 box tall
-     enough to reach 100dvh needs to be WIDER than the screen, so
-     max-width clamped the width down - but the explicit height:100dvh
-     never shrank to match, breaking the ratio. object-fit below (a
-     standard, well-supported technique for exactly this - same idea as
-     an <img>/<video> fitted into a box) handles the actual aspect-ratio
-     preservation instead, so the wrapper itself doesn't need to fight
-     over its own dimensions at all. */
+
   width: 100vw;
   height: 100dvh;
   max-width: none;
@@ -1745,21 +1460,10 @@ body.viewer-mode #bufferRange {
   width: 100%;
   height: 100%;
   max-width: none;
-  /* Scales the canvas's actual 160x144 content to fit within its box
-     WITHOUT stretching - letterboxing (empty space) on whichever axis
-     doesn't perfectly match, same as a correctly-configured <video>,
-     rather than distorting the image to fill the box exactly. */
+
   object-fit: contain;
 }
 
-/* --- The on-screen controls, repositioned as a semi-transparent
-   overlay directly on top of the game screen instead of their normal
-   stacked-below-the-screen layout. Opacity (not just a translucent
-   background) is what actually makes this "semi-translucent" as asked
-   for - the game art underneath stays visible through the buttons
-   themselves, not just in the gaps between them. Full opacity briefly
-   on an actual touch (:active) makes a pressed button easy to confirm
-   at a glance without needing to look away from the game. */
 #gameStage:fullscreen .emulator-controls,
 #gameStage:fullscreen .controls,
 #gameStage:fullscreen .system-buttons,
@@ -1798,18 +1502,7 @@ body.viewer-mode #bufferRange {
 
 #gameStage:fullscreen .system-buttons,
 #gameStage:-webkit-full-screen .system-buttons {
-  /* Confirmed via two paired screenshots (portrait and landscape) that
-     one offset genuinely can't serve both orientations - the horizontal
-     gap between the D-pad and A/B (where Select/Start need to fit
-     without touching either) is wide in landscape (comfortable at
-     nearly the same height) but narrow in portrait (not enough room,
-     so they need real vertical separation instead). Default here is
-     the LANDSCAPE value - a small nudge above the D-pad/A/B row, per
-     feedback that it needed to come down further still. The media
-     query below overrides this for narrow (portrait-shaped) viewports
-     specifically, going back to a much larger stagger - confirmed via
-     screenshot that anything smaller genuinely overlaps B on a narrow
-     screen, this isn't just extra caution. */
+
   bottom: calc(4dvh + 12px);
   left: 50%;
   transform: translateX(-50%);
@@ -1832,10 +1525,6 @@ body.viewer-mode #bufferRange {
   font-size: 0.7rem;
 }
 
-/* Waiting/request-control notices and the connect gate already
-   position themselves relative to .screen-wrap / in normal flow - they
-   continue to work the same way here, just now genuinely visible while
-   fullscreen instead of being cut off outside the fullscreen element. */
 #gameStage:fullscreen #waitingForControlNotice,
 #gameStage:-webkit-full-screen #waitingForControlNotice {
   position: absolute;
@@ -1850,23 +1539,6 @@ body.viewer-mode #bufferRange {
   font-size: 0.75rem;
 }
 
-/* Narrow (portrait-shaped) viewports specifically - not the same
-   breakpoint as the small-screen one below, which is about absolute
-   size, not shape. A phone held in landscape can easily be wider than
-   this even if it's a small phone, and should still get the default
-   (smaller) .system-buttons clearance above, not this one - what
-   matters here is whether there's enough horizontal gap between the
-   D-pad and A/B for Select/Start to fit without a real vertical
-   stagger, which is a shape question, not a size one. */
-
-/* "Hide controls" toggle (screen-meta's own button, shown only while
-   fullscreen - see setControlsHidden in app.js) - hides the on-screen
-   D-pad/face-buttons/Select-Start overlay AND the fast-forward/reset/
-   mute row, for anyone using a physical controller or keyboard who'd
-   rather see the game without translucent buttons over it. The toggle
-   button itself lives in .screen-meta, not inside any of these groups,
-   specifically so hiding the controls can never also hide the one
-   button that brings them back. */
 #gameStage.controls-hidden:fullscreen .controls,
 #gameStage.controls-hidden:fullscreen .system-buttons,
 #gameStage.controls-hidden:fullscreen .emulator-controls,
@@ -1879,10 +1551,7 @@ body.viewer-mode #bufferRange {
 @media (max-width: 700px) {
   #gameStage:fullscreen .system-buttons,
   #gameStage:-webkit-full-screen .system-buttons {
-    /* Confirmed via a real screenshot that anything close to the D-pad/
-       A/B row's own height overlaps B directly on a narrow screen -
-       172px (the default dpad height) + 24px clearance staggers it
-       comfortably above that row instead. */
+
     bottom: calc(4dvh + 172px + 24px);
   }
 }
