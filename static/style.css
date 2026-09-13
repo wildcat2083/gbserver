@@ -117,16 +117,14 @@ body.theme-dark {
    translucent but the D-pad and face buttons are still solid colored
    plastic, not clear, and keeping them opaque also keeps their labels
    reliably readable against a background that's otherwise fairly busy.
-   0.5 alpha here (up from an earlier 0.38) specifically because a real
-   photo has far more brightness variance than the hand-drawn gradient
-   pattern this replaced - checked contrast against the photo's actual
-   brightest spots (the glowing highlight dots), not just its average
-   tone, and the lower alpha left those spots reading around 2:1,
-   nowhere near readable. */
+   0.32 alpha here (previously 0.55, at the same level .settings-panel
+   already used) - matching Help/Chat/Settings' lighter tint on .shell
+   too now, so all three panels read the same way rather than .shell
+   standing out as more opaque. */
 body.theme-clearshell {
   color-scheme: dark;
-  --gb-body: rgba(150, 150, 156, 0.5);
-  --gb-body-dark: rgba(95, 95, 100, 0.55);
+  --gb-body: rgba(150, 150, 156, 0.28);
+  --gb-body-dark: rgba(95, 95, 100, 0.32);
   --gb-body-edge: rgba(70, 70, 74, 0.75);
   --gb-screen-frame: rgba(110, 110, 115, 0.6);
   --gb-screen-bg: #000000;
@@ -134,7 +132,7 @@ body.theme-clearshell {
   --gb-purple-dark: #4a4a50;
   --gb-ink: #ececed;
   --gb-muted: #c2c2c8;
-  --gb-body-highlight: rgba(200, 200, 205, 0.4);
+  --gb-body-highlight: rgba(200, 200, 205, 0.22);
   --gb-screen-frame-highlight: rgba(175, 175, 180, 0.45);
   --gb-purple-highlight: #b5b5bd;
   background: #17171a;
@@ -179,6 +177,7 @@ body.theme-clearshell .shell::before {
   background-image: url("/static/img/circuit-board.jpg");
   background-size: cover;
   background-position: center;
+  background-attachment: fixed;
   filter: brightness(0.45);
   background-repeat: no-repeat;
 }
@@ -210,18 +209,18 @@ body.theme-clearshell .shell::before {
    translucent tint gradient (topmost, now grey) and the photo (bottom)
    in one background-image stack, topmost-layer-first. */
 /* This tint layer deliberately does NOT reuse var(--gb-body-highlight)/
-   var(--gb-body)/var(--gb-body-dark) the way .shell's own background
-   still does - those are shared across the whole theme, and .shell's
-   level of wash was already approved. Cut roughly in half here instead
-   (0.4/0.5/0.55 alpha down to 0.22/0.28/0.32) as its own hardcoded
-   values, specifically because Help/Chat/Settings read as too flat and
-   grey with the full-strength tint, even after the text-shadow below -
-   less wash lets more of the actual photo's contrast/detail show
-   through behind the text instead of everything blurring toward one
-   flat grey. Re-checked against the real photo with this lighter tint:
-   ink still clears 4-10:1 across the range; muted is a bit tighter at
-   the photo's brightest spots (same ballpark as .shell already runs at,
-   not worse), which the text-shadow below still covers. */
+   var(--gb-body)/var(--gb-body-dark) - those hold .shell's heavier
+   tint. This panel gets its own hardcoded, lighter values instead
+   (0.22/0.28/0.32 alpha), so Help/Chat/Settings read closer to "none" -
+   more of the actual photo's contrast/detail shows through behind the
+   text instead of a flat wash. A brief detour swapped this the other
+   way around (this panel heavier, .shell lighter), which looked
+   backwards - washed white here, circuit board barely visible - and
+   wasn't what was actually wanted; this restores the original pairing.
+   Re-checked against the real photo with this lighter tint: ink still
+   clears 4-10:1 across the range; muted is a bit tighter at the
+   photo's brightest spots (same ballpark as .shell runs at, not
+   worse), which the text-shadow below still covers. */
 body.theme-clearshell .settings-panel {
   background-image:
     linear-gradient(180deg, rgba(200, 200, 205, 0.22) 0%, rgba(150, 150, 156, 0.28) 55%, rgba(95, 95, 100, 0.32) 100%),
@@ -229,7 +228,22 @@ body.theme-clearshell .settings-panel {
     url("/static/img/circuit-board.jpg");
   background-size: auto, auto, cover;
   background-position: 0 0, 0 0, center;
+  background-attachment: scroll, scroll, fixed;
   background-repeat: no-repeat, no-repeat, no-repeat;
+  /* background-attachment:fixed on just the photo layer (not the tint
+     or scrim layers above it) ties it to the viewport instead of this
+     panel's own box - the actual root cause of .shell and .settings-
+     panel looking inconsistent even with matched tint alpha: with
+     background-size:cover computed per-element, a narrow side panel
+     and the wide/tall shell each independently crop a DIFFERENT slice
+     of a photo that isn't uniformly bright, so they'd never quite
+     match no matter how carefully the alpha was tuned. Tying both to
+     the viewport instead makes every panel look through the same
+     consistent region of one shared "sheet", like windows into the
+     same backdrop rather than each sampling its own independent crop.
+     Fixed attachment also isn't affected by this panel's own internal
+     overflow:auto scrolling, same guarantee "scroll" attachment gave
+     before, just anchored to the viewport instead of the local box. */
   /* .shell got a text-shadow earlier (see below) to cover the gap
      between --gb-ink/--gb-muted and this photo's brightest spots, but
      .settings-panel never did - its own body text was checked and
@@ -418,9 +432,8 @@ body {
 
 .settings-panel {
   position: fixed;
-  left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
+  inset: 0;
+  margin: auto;
   width: min(92vw, 380px);
   max-height: min(80vh, 520px);
   overflow: auto;
@@ -1513,11 +1526,11 @@ body.viewer-mode #bufferRange {
     flex-direction: column;
     left: auto;
     right: 32px;
-    top: 50%;
-    transform: translateY(-50%);
+    top: 0;
+    bottom: 0;
+    margin: auto 0;
     width: 320px;
     max-height: none;
-    margin: 0;
   }
 
   .chat-body {
@@ -1550,11 +1563,11 @@ body.viewer-mode #bufferRange {
     flex-direction: column;
     left: 32px;
     right: auto;
-    top: 50%;
-    transform: translateY(-50%);
+    top: 0;
+    bottom: 0;
+    margin: auto 0;
     width: 320px;
     max-height: none;
-    margin: 0;
   }
 
   .help-body {

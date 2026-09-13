@@ -60,23 +60,25 @@ def run_worker(cmd_queue, out_queue, roms_dir, saves_dir, sound_sample_rate,
         Boytacean = None
         boytacean_available = False
 
-    # Shared between despike_audio's own context window and the carry-
-    # over length at the batch send point below - keeping these as one
-    # constant means they can't silently drift out of sync with each
-    # other if either one is ever tuned later.
-    DESPIKE_CONTEXT = 4
-    # The glitch this corrects isn't always exactly one sample wide -
-    # confirmed directly against a real capture that it can span 2, 3,
-    # or 4 consecutive samples too. Caps how wide a near-zero run this
-    # will treat as a candidate glitch at all - anything wider is left
-    # alone as presumed-legitimate content (a real musical rest/pause is
-    # much longer than this).
-    DESPIKE_MAX_RUN = 6
-    # How much of the tail end of each batch gets held back rather than
-    # sent immediately - needs to cover a full-width run PLUS its own
-    # context, since a run this wide could straddle a batch boundary
-    # with only part of it visible in either batch alone.
-    AUDIO_HOLDBACK = DESPIKE_CONTEXT + DESPIKE_MAX_RUN
+    # Set once, on the first grab_audio() call, to whichever accessor
+    # this installed PyBoy version actually gets right - see grab_audio
+    # below for the full reasoning. None = not probed yet.
+    audio_accessor = None
+
+    # This loop, not PyBoy, owns frame pacing now (see set_emulation_speed(0)
+    # in do_load_rom and the sleep at the bottom of the loop). next_frame is
+    # an ABSOLUTE deadline that accumulates by exactly 1/60 every frame, so a
+    # frame that overruns is made up for by the next one sleeping less -
+    # PyBoy's own limiter abandons the deficit instead (it does _ftime = now
+    # on an overrun), which biased the loop about 0.3% slow and steadily
+    # drained the browser's audio cushion until it underran.
+    next_frame = time.monotonic()
+    # Rolling FPS measurement, logged so a pacing regression is visible in
+    # `journalctl -u gbserver -f` rather than having to be inferred from
+    # client-side audio symptoms.
+    fps_window_start = time.monotonic()
+    fps_frames = 0
+    FPS_REPORT_EVERY = 300  # frames (~5s at 60fps)
 
     pyboy = None
     rom_path = None
@@ -85,19 +87,6 @@ def run_worker(cmd_queue, out_queue, roms_dir, saves_dir, sound_sample_rate,
     fast_forward = False
     applied_fast_forward = False
     audio_accum = bytearray()
-    # Two small pieces carried across batch sends, so despiking always has
-    # genuine context on BOTH sides of every sample, including right at
-    # what would otherwise be a batch boundary - see the send-point
-    # comment below for the full reasoning:
-    #   audio_carry_context    - already-sent, confirmed-correct samples,
-    #                             used ONLY as read-only "before" context
-    #                             for the next round, never re-sent.
-    #   audio_carry_unresolved - the trailing samples of the last batch
-    #                             that didn't yet have enough "after"
-    #                             context to safely evaluate, deferred
-    #                             until the next batch's data arrives.
-    audio_carry_context = bytearray()
-    audio_carry_unresolved = bytearray()
     last_frame_raw = None
     last_status_sent = None
     active_cheats = []  # list of {"address": int, "value": int} - GameShark-style RAM
@@ -144,7 +133,7 @@ def run_worker(cmd_queue, out_queue, roms_dir, saves_dir, sound_sample_rate,
     def do_load_rom(filename, load_save, ram_bytes=None):
         nonlocal pyboy, rom_path, engine_name, running, fast_forward
         nonlocal last_frame_raw, audio_accum, frame_no, active_cheats
-        nonlocal audio_carry_context, audio_carry_unresolved
+        nonlocal next_frame, fps_window_start, fps_frames
 
         # Cheats reset on every load/reload, deliberately - including the
         # same-ROM "Resume save"/Reset cases below, not just switching to
@@ -218,7 +207,10 @@ def run_worker(cmd_queue, out_queue, roms_dir, saves_dir, sound_sample_rate,
                 pyboy_kwargs["ram_file"] = io.BytesIO(ram_bytes)
             new_pyboy = PyBoy(str(candidate), **pyboy_kwargs)
             engine_name = "pyboy"
-        new_pyboy.set_emulation_speed(1)
+        # 0 = unlimited: PyBoy runs flat out and this loop does the pacing.
+        # Leaving this at 1 puts two independent frame limiters in series,
+        # and PyBoy's is the one that silently drops missed deadlines.
+        new_pyboy.set_emulation_speed(0)
 
         save_load_error = None
         # ram_bytes and an existing .state load are mutually exclusive by
@@ -242,14 +234,14 @@ def run_worker(cmd_queue, out_queue, roms_dir, saves_dir, sound_sample_rate,
         running = True
         fast_forward = False
         audio_accum = bytearray()
-        # Reset too - carrying context across a ROM load/reset would mean
-        # despiking a fresh session's very first batch against leftover
-        # audio from whatever was playing before, which isn't a
-        # meaningful comparison at all.
-        audio_carry_context = bytearray()
-        audio_carry_unresolved = bytearray()
         last_frame_raw = None
         frame_no = 0
+        # Fresh deadline - otherwise the first frame of a new ROM inherits
+        # however stale next_frame had become while nothing was loaded, and
+        # the loop sprints to "catch up" to a deadline that never applied.
+        next_frame = time.monotonic()
+        fps_window_start = next_frame
+        fps_frames = 0
 
         send_status()
         return save_load_error
@@ -301,7 +293,7 @@ def run_worker(cmd_queue, out_queue, roms_dir, saves_dir, sound_sample_rate,
             sound_volume=sound_volume,
         )
         new_pyboy.load_state(snapshot)
-        new_pyboy.set_emulation_speed(1 if not fast_forward else fast_forward_speed)
+        new_pyboy.set_emulation_speed(0)  # this loop paces; see do_load_rom
         pyboy = new_pyboy
 
         return sav_bytes
@@ -330,104 +322,74 @@ def run_worker(cmd_queue, out_queue, roms_dir, saves_dir, sound_sample_rate,
         return pyboy.screen.ndarray.tobytes()
 
     def grab_audio():
+        """Returns this tick's audio as raw interleaved stereo int8 bytes,
+        or None if there's nothing valid to send.
+
+        Deliberately does NOT use pyboy.sound.ndarray. That property is
+        implemented as:
+
+            raw_ndarray = frombuffer(audiobuffer).reshape(length // 2, 2)
+            return raw_ndarray[:audiobuffer_head]
+
+        - but audiobuffer_head advances by TWO per stereo sample (it's a
+        flat index into the int8 array; see core/sound.py's sample()),
+        while raw_ndarray's first axis is indexed by stereo SAMPLE. So
+        the slice asks for twice as many rows as were actually written
+        this frame, clamped by the buffer's row count, and the surplus
+        rows are stale bytes from an earlier frame - clear_buffer() only
+        resets the head, it never zeroes the array.
+
+        At 36 kHz that's one bogus sample appended to every single frame
+        (a 60 Hz impulse train - the buzz), growing to 30-200 bogus
+        samples on the short frames PyBoy emits when the LCD toggles
+        (menu/game transitions - the clicks). PyBoy's own SDL2 output
+        path is unaffected because window_sdl2.py treats the head as the
+        flat byte count it actually is, which is why play_headed.py
+        always sounded clean on the same content.
+
+        Reading raw_buffer_head // 2 rows out of raw_ndarray directly is
+        the same thing SDL2 does, just kept in stereo-sample units. Falls
+        back to the old accessor only if this PyBoy build doesn't expose
+        those attributes at all, so an older/newer install still produces
+        audio rather than silence.
+        """
+        nonlocal audio_accessor
         if engine_name != "pyboy":
             return None
+
+        if audio_accessor is None:
+            try:
+                sound = pyboy.sound
+                raw = sound.raw_ndarray
+                head = sound.raw_buffer_head
+                if isinstance(raw, np.ndarray) and isinstance(head, int):
+                    audio_accessor = "raw"
+                else:
+                    audio_accessor = "legacy"
+            except Exception:
+                audio_accessor = "legacy"
+            if audio_accessor == "legacy":
+                print(
+                    "[worker] pyboy.sound.raw_ndarray/raw_buffer_head unavailable - "
+                    "falling back to sound.ndarray, which over-reads the frame "
+                    "buffer and will reintroduce clicking"
+                )
+
         try:
-            arr = pyboy.sound.ndarray
+            if audio_accessor == "raw":
+                n = pyboy.sound.raw_buffer_head // 2   # valid stereo samples this frame
+                if n <= 0:
+                    return None
+                arr = pyboy.sound.raw_ndarray[:n]
+            else:
+                arr = pyboy.sound.ndarray
         except Exception:
             return None
         if arr is None or arr.size == 0:
             return None
+        # .tobytes() always copies, which matters here: raw_ndarray is a
+        # live view onto the buffer PyBoy overwrites on the next tick.
         return np.ascontiguousarray(arr).tobytes()
-
-    def despike_audio(pcm_bytes, near_zero=3, neighbor_min=5, context=DESPIKE_CONTEXT,
-                      context_std_max=1.5, max_run=DESPIKE_MAX_RUN):
-        """Corrects an isolated dropout toward silence, of any width up
-        to `max_run` samples - a genuine, confirmed artifact in PyBoy's
-        sound.ndarray API specifically around channel-trigger/note-attack
-        moments (verified directly: retriggering a channel mid-playback
-        reliably produces a dropout while its immediate surroundings stay
-        at the sustained level on both sides). This does NOT show up in
-        PyBoy's own native SDL2 audio output (confirmed via play_headed.py
-        sounding clean on the same content) - almost certainly because
-        that path never goes through this specific external accessor at
-        all, so this is a narrow quirk in the API surface this project
-        depends on, not something fixable by changing how ticks are
-        batched/concatenated here.
-
-        Detects contiguous RUNS of near-zero samples, not just single
-        isolated ones - an earlier version only ever handled exactly
-        1-sample dropouts, and a real capture showed the same mechanism
-        producing 2, 3, and 4-sample-wide versions too, all of which
-        passed straight through untouched since nothing was looking for
-        anything wider than one sample. `max_run` bounds how wide a run
-        this will still treat as a candidate glitch - wider than that is
-        left alone as presumed-legitimate content (a real musical rest is
-        much longer than a few samples), confirmed directly against a
-        deliberately long silence that it's correctly never touched.
-
-        near_zero/neighbor_min were originally 6/12 - too high a bar,
-        confirmed against a real capture: the SAME glitch mechanism
-        happens just as often during quieter passages (surrounding level
-        6-10, not just 15+), and a threshold requiring the surroundings
-        to exceed 12 silently let all of those through untouched, since a
-        genuine full drop-to-zero from a level of 6 is just as real a
-        glitch as one from 15 - only the absolute size differs, not
-        whether it's a glitch. Lowered both, and tightened
-        context_std_max (2 -> 1.5) to compensate for the extra
-        sensitivity this introduces at low volumes - re-validated the
-        full test suite at these values: still catches the original loud
-        glitch AND the newly-found quiet one, still leaves a legitimate
-        repeating pattern and a real multi-sample edge alone, and false
-        positives on realistic low-volume noise dropped to ~0.05% (was
-        0.6% before tightening context_std_max).
-
-        Checks a wider window (`context` samples) on BOTH sides of each
-        run, not just the single immediate neighbor - an earlier version
-        only checked one neighbor each side, and that turned out to also
-        misfire on legitimate fast, high-pitched square-wave content
-        whose own brief low-phase (as short as a couple of samples) looks
-        identical to a real glitch if you only ever look one sample out.
-        The genuine difference between the two: a real glitch sits inside
-        an otherwise long, steady run of a DIFFERENT, non-zero level
-        (many consistent samples on both sides); legitimate fast
-        oscillation doesn't stay steady for more than a sample or two
-        before flipping again. Requiring several samples of real
-        consistency on each side is what actually distinguishes them -
-        confirmed directly: this still catches the real, confirmed
-        glitch (at every width found so far), while correctly leaving
-        alone a genuinely repeating 4-sample-period square wave found in
-        an actual gameplay capture that an earlier, single-neighbor
-        version was incorrectly "fixing" (introducing its own distortion
-        into legitimate audio).
-        """
-        if len(pcm_bytes) < (2 * context + 3) * 2:
-            return pcm_bytes
-        arr = np.frombuffer(pcm_bytes, dtype=np.int8).astype(np.int16)
-        stereo = arr.reshape(-1, 2).copy()
-        n = stereo.shape[0]
-        for ch in range(2):
-            chan = stereo[:, ch]
-            is_low = np.abs(chan) < near_zero
-            # Contiguous runs of near-zero samples, via edge-detection on
-            # the boolean mask (pad both ends with 0/False so a run
-            # touching either edge of the buffer still gets a proper
-            # start/end pair).
-            diff = np.diff(np.concatenate(([0], is_low.astype(np.int8), [0])))
-            run_starts = np.where(diff == 1)[0]
-            run_ends = np.where(diff == -1)[0]  # exclusive end index
-            for start, end in zip(run_starts, run_ends):
-                if end - start > max_run:
-                    continue
-                if start - context < 0 or end + context > n:
-                    continue  # not enough real context at the very edges of this buffer
-                before = chan[start - context:start].astype(np.float64)
-                after = chan[end:end + context].astype(np.float64)
-                if (before.std() < context_std_max and after.std() < context_std_max
-                        and before.mean() > neighbor_min and after.mean() > neighbor_min
-                        and abs(before.mean() - after.mean()) < context_std_max * 2):
-                    chan[start:end] = int((before.mean() + after.mean()) / 2)
-        return stereo.astype(np.int8).tobytes()
 
     def handle_command(msg):
         cmd = msg.get("cmd")
@@ -525,7 +487,6 @@ def run_worker(cmd_queue, out_queue, roms_dir, saves_dir, sound_sample_rate,
         # Loaded and ticking: drain any pending commands without blocking,
         # then do exactly one tick - same overall shape as the original
         # _run_loop, just now living in its own process.
-        start = time.time()
         try:
             while True:
                 msg = cmd_queue.get_nowait()
@@ -541,11 +502,13 @@ def run_worker(cmd_queue, out_queue, roms_dir, saves_dir, sound_sample_rate,
             continue  # a command (e.g. stop) may have just cleared it
 
         if fast_forward != applied_fast_forward:
-            target = fast_forward_speed if fast_forward else 1
-            try:
-                pyboy.set_emulation_speed(target)
-            except Exception as e:
-                print(f"[worker] set_emulation_speed failed: {e}")
+            # Fast-forward is now purely a change of pacing target (see the
+            # sleep at the bottom of the loop), not a PyBoy setting - the
+            # emulator is already running unlimited. Resync the deadline on
+            # the transition so switching speeds doesn't leave next_frame
+            # far in the past (a burst of uncapped frames) or far in the
+            # future (a stall).
+            next_frame = time.monotonic()
             applied_fast_forward = fast_forward
 
         alive = pyboy.tick(1, True)
@@ -577,42 +540,15 @@ def run_worker(cmd_queue, out_queue, roms_dir, saves_dir, sound_sample_rate,
         if audio_bytes and not fast_forward:
             audio_accum.extend(audio_bytes)
         if (frame_no + 1) % max(1, audio_batch_ticks) == 0 and audio_accum:
-            # Combines: already-sent, confirmed-correct history (read-only
-            # context, never re-sent) + the still-unresolved tail deferred
-            # from last round + this round's new data - so every sample,
-            # including the ones right at what would otherwise be a batch
-            # boundary, gets genuine context on BOTH sides before being
-            # judged. The deferred tail needed its OWN real "before"
-            # context too, not just "after" context from the new batch -
-            # an earlier version carried only the unresolved tail forward
-            # by itself, and it turned out those samples permanently
-            # lacked enough history to ever actually get evaluated, no
-            # matter how much new data arrived after them. Confirmed via
-            # direct testing: a glitch at the very last sample of a batch
-            # now gets correctly resolved on the following round, and -
-            # since despike_audio can now match a multi-sample run, not
-            # just a single sample - a run split right across a batch
-            # boundary (checked with a full-width run straddling the
-            # split) resolves correctly too, now that the holdback covers
-            # a full run's width plus its own context, not just context
-            # alone.
-            combined = bytes(audio_carry_context) + bytes(audio_carry_unresolved) + bytes(audio_accum)
-            cleaned_combined = despike_audio(combined)
-            context_bytes = AUDIO_HOLDBACK * 2  # holdback stereo-sample-pairs, 2 bytes each
-            send_start = len(audio_carry_context)
-            send_end = len(cleaned_combined) - context_bytes
-            if send_end > send_start:
-                cleaned = cleaned_combined[send_start:send_end]
-                audio_carry_context = bytearray(cleaned_combined[send_end - context_bytes:send_end])
-                audio_carry_unresolved = bytearray(cleaned_combined[send_end:])
-            else:
-                # Buffer too small this round to safely hold anything
-                # back (shouldn't normally happen at real batch sizes) -
-                # send everything now rather than risk losing audio.
-                cleaned = cleaned_combined
-                audio_carry_context = bytearray()
-                audio_carry_unresolved = bytearray()
-            out_queue.put({"type": "audio", "data": cleaned})
+            # Straight concatenation of this round's ticks, sent as-is.
+            # Every sample in here was actually written by the APU this
+            # frame (see grab_audio), so there's nothing to detect,
+            # repair, or hold back for context: no despiking pass, and no
+            # samples deferred to the next batch. Consecutive batches are
+            # therefore contiguous by construction - sample N of one
+            # batch is immediately followed by sample N+1 of the next,
+            # with no boundary the client has to splice around.
+            out_queue.put({"type": "audio", "data": bytes(audio_accum)})
             audio_accum = bytearray()
 
         frame_no += 1
@@ -625,13 +561,37 @@ def run_worker(cmd_queue, out_queue, roms_dir, saves_dir, sound_sample_rate,
         if not alive:
             do_stop()
 
-        if fast_forward:
-            time.sleep(0.001)
-        else:
-            elapsed = time.time() - start
-            remaining = (1.0 / 60.0) - elapsed
-            if remaining > 0:
-                time.sleep(remaining)
+        fps_frames += 1
+        if fps_frames >= FPS_REPORT_EVERY:
+            now_t = time.monotonic()
+            span = now_t - fps_window_start
+            if span > 0:
+                print(
+                    f"[worker] {fps_frames / span:.2f} fps"
+                    f"{' (fast-forward)' if fast_forward else ''}",
+                    flush=True,
+                )
+            fps_window_start = now_t
+            fps_frames = 0
+
+        # Absolute-deadline pacing. next_frame accumulates rather than being
+        # recomputed from "now", so per-frame rounding error doesn't build up
+        # and an occasional slow frame (a big zlib compress, a queue that
+        # briefly blocks) is absorbed by the next frame sleeping less instead
+        # of permanently costing the schedule 1/60s. That drift is what was
+        # draining the client's audio cushion until it underran roughly every
+        # 19 seconds.
+        speed_mult = max(1, fast_forward_speed) if fast_forward else 1
+        next_frame += 1.0 / (60.0 * speed_mult)
+        delay = next_frame - time.monotonic()
+        if delay > 0:
+            time.sleep(delay)
+        elif delay < -0.25:
+            # More than a quarter second behind: something genuinely stalled
+            # (a long autosave, heavy contention). Resync rather than trying
+            # to make it up, which would sprint through frames and produce a
+            # burst of audio the client can't absorb anyway.
+            next_frame = time.monotonic()
       except Exception:
         import traceback
         log_crash(traceback.format_exc())

@@ -567,19 +567,23 @@
                           // lock been satisfied yet" (one-time, never goes back to false); this is
                           // the actual, reversible mute toggle
 
-  // Small safety cushion added whenever the schedule is (re)established -
-  // without this, nextStartTime always sits exactly at audioCtx.currentTime
-  // with zero slack, so any brief main-thread delay (a GC pause, a slow
-  // video frame decompressing, a burst of WebSocket messages) immediately
-  // triggers the "fell behind, skip ahead to now" fallback below, which
-  // silently drops whatever time span was missed - heard as small gaps/
-  // stutters in the audio, distinct from the waveform-continuity clicks
-  // the smoothing filter and (previously) the declick fade dealt with.
-  // Verified with a scheduling simulation against realistic jitter: zero
-  // margin dropped ~18/200 chunks (~310ms lost); 60ms margin drops that
-  // to ~4/200 (~30ms lost) - diminishing returns much past this, and more
-  // margin means more added latency for what's an interactive stream.
-  const SCHEDULE_LOOKAHEAD = 0.06;
+  // How much audio we aim to keep scheduled ahead of the playback clock.
+  // This cushion is what absorbs arrival jitter - a brief main-thread delay
+  // (a GC pause, a video frame decompressing, a burst of WebSocket
+  // messages) or a hiccup in delivery from the Pi. With zero cushion every
+  // one of those is an underrun.
+  //
+  // Was 60ms, which measured marginal against real arrival timing: chunks
+  // are ~66.7ms apart and observed gaps ranged 57-82ms normally with
+  // outliers past 149ms. More cushion costs latency (audio trails video by
+  // this much), so this is a deliberate middle: enough to ride out ordinary
+  // jitter, short enough that sound effects still feel attached to what's
+  // on screen.
+  //
+  // Note this is a TARGET, not a floor that gets re-armed on every problem.
+  // Re-arming it after a shortfall was the old bug - see the scheduling
+  // decision in playAudioChunk for why that made things dramatically worse.
+  const TARGET_LATENCY = 0.10;
 
   // Bounds drift in the OTHER direction from the lookahead margin above -
   // if audio ever arrives even slightly faster than real-time playback
@@ -609,6 +613,25 @@
   // slip is far less noticeable than an audible glitch on every stall.
   const MAX_SCHEDULE_AHEAD = 0.7;
 
+  // How the cushion is held at TARGET_LATENCY: by playing very slightly
+  // slow whenever we're running under it, which stretches each chunk in
+  // time and buys back a fraction of a millisecond - with NO discontinuity
+  // at all, unlike inserting silence, which is a real hole in the waveform.
+  // This is what jitter buffers in streaming players generally do.
+  //
+  // The pull is PROPORTIONAL to how far under target we are, not a binary
+  // "below X, stretch by Y". A fixed threshold recovers far too slowly from
+  // a deep shortfall: simulated against real arrival timing it turned one
+  // 60ms hole into a cluster of small ones, which sounds worse. Scaling the
+  // correction with the error holds the cushion steady instead.
+  //
+  // 1% is ~17 cents of pitch, which isn't perceptible in passing, and it
+  // can absorb a sustained 1% shortfall in production rate indefinitely -
+  // about 3x the ~0.31% the server was actually drifting by. Raise it if
+  // the worker ever runs further behind than that; the cost is audible
+  // pitch wobble during recovery.
+  const MAX_REBUILD_PULL = 0.01;
+
   // PyBoy's sound buffer is fixed at 8-bit (256 amplitude levels) - this is
   // a limitation of the emulator's audio core, not the sample rate. Raw
   // 8-bit playback has an audible "grainy" quantization texture. A simple
@@ -631,12 +654,12 @@
   function ensureAudioContext() {
     if (audioCtx) return;
     audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
-    nextStartTime = audioCtx.currentTime + SCHEDULE_LOOKAHEAD;
+    nextStartTime = audioCtx.currentTime + TARGET_LATENCY;
     audioEnabled = true;
   }
 
   function resetAudioSchedule() {
-    if (audioCtx) nextStartTime = audioCtx.currentTime + SCHEDULE_LOOKAHEAD;
+    if (audioCtx) nextStartTime = audioCtx.currentTime + TARGET_LATENCY;
     smoothPrevL = 0;
     smoothPrevR = 0;
   }
@@ -698,8 +721,9 @@
     // periodic summary of chunk arrival timing - meant to be removed
     // once the actual cause is confirmed, not a permanent addition.
     window.__audioDiag = window.__audioDiag || {
-      fellBehindCount: 0, resetCount: 0, chunkCount: 0,
+      fellBehindCount: 0, resetCount: 0, chunkCount: 0, stretchCount: 0,
       lastArrival: null, minGapMs: Infinity, maxGapMs: 0,
+      minCushionMs: Infinity,
       lastSummary: now,
     };
     const diag = window.__audioDiag;
@@ -710,25 +734,57 @@
       if (gapMs > diag.maxGapMs) diag.maxGapMs = gapMs;
     }
     diag.lastArrival = now;
+    const cushionMs = (nextStartTime - now) * 1000;
+    if (cushionMs < diag.minCushionMs) diag.minCushionMs = cushionMs;
     if (nextStartTime < now) {
       diag.fellBehindCount++;
-      console.warn(`[audio-diag] FELL BEHIND by ${((now - nextStartTime) * 1000).toFixed(1)}ms - chunk #${diag.chunkCount}`);
+      console.warn(`[audio-diag] UNDERRAN by ${(-cushionMs).toFixed(1)}ms (lost that much audio; no gap inserted) - chunk #${diag.chunkCount}`);
+    } else if (cushionMs < TARGET_LATENCY * 1000 * 0.5) {
+      diag.stretchCount++;   // only count meaningful pulls, not idle trimming
     }
     if (nextStartTime > now + MAX_SCHEDULE_AHEAD) {
       diag.resetCount++;
-      console.warn(`[audio-diag] SCHEDULE RESET - was ${((nextStartTime - now) * 1000).toFixed(1)}ms ahead - chunk #${diag.chunkCount}`);
+      console.warn(`[audio-diag] SCHEDULE RESET - was ${cushionMs.toFixed(1)}ms ahead - chunk #${diag.chunkCount}`);
     }
     if (now - diag.lastSummary > 2) {
-      console.log(`[audio-diag] summary: ${diag.chunkCount} chunks, ${diag.fellBehindCount} fell-behind, ${diag.resetCount} resets, gap range ${diag.minGapMs.toFixed(1)}-${diag.maxGapMs.toFixed(1)}ms, this chunk had ${nSamples} samples`);
+      console.log(`[audio-diag] summary: ${diag.chunkCount} chunks, ${diag.fellBehindCount} underruns, ${diag.resetCount} resets, ${diag.stretchCount} stretched, cushion min ${diag.minCushionMs.toFixed(1)}ms, gap range ${diag.minGapMs.toFixed(1)}-${diag.maxGapMs.toFixed(1)}ms, this chunk had ${nSamples} samples`);
       diag.lastSummary = now;
       diag.minGapMs = Infinity;
       diag.maxGapMs = 0;
+      diag.minCushionMs = Infinity;
     }
     // --- end diagnostic instrumentation ---
-    if (nextStartTime < now) nextStartTime = now + SCHEDULE_LOOKAHEAD;
-    if (nextStartTime > now + MAX_SCHEDULE_AHEAD) nextStartTime = now + SCHEDULE_LOOKAHEAD;
+    if (nextStartTime < now) {
+      // Underrun. Whatever should have played between nextStartTime and now
+      // is already gone - but that's typically only a millisecond or two.
+      // Start this chunk immediately and take exactly that loss.
+      //
+      // This used to re-arm the full cushion here (nextStartTime = now +
+      // lookahead), which meant a 1.3ms shortfall produced a ~61ms hole:
+      // the correction was the audible drop, not the shortfall it was
+      // correcting. Web Audio already starts a source immediately when the
+      // requested time is in the past, so scheduling at `now` is both
+      // simpler and strictly less lossy.
+      nextStartTime = now;
+    } else if (nextStartTime > now + MAX_SCHEDULE_AHEAD) {
+      // Far enough ahead that something genuinely abnormal happened (a long
+      // delivery stall followed by its backlog arriving at once). Snapping
+      // back is a real discontinuity, but it's the only way out of this one.
+      nextStartTime = now + TARGET_LATENCY;
+    }
+
+    // Hold the cushion at target by stretching, never by inserting silence.
+    // buffer.duration is the UNSTRETCHED length, so the schedule has to
+    // advance by duration/rate to stay consistent with what actually plays.
+    const cushion = nextStartTime - now;
+    let rate = 1;
+    if (cushion < TARGET_LATENCY) {
+      rate = 1 - MAX_REBUILD_PULL * Math.min(1, (TARGET_LATENCY - cushion) / TARGET_LATENCY);
+    }
+    source.playbackRate.value = rate;
+
     source.start(nextStartTime);
-    nextStartTime += buffer.duration;
+    nextStartTime += buffer.duration / rate;
   }
 
   // --- Temporary diagnostic: export the raw capture above as a real .wav
