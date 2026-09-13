@@ -592,6 +592,33 @@ class Emulator:
             return True
         return False
 
+    def close_all_clients(self, close_code=None, message="Server is going offline"):
+        with self.clients_lock:
+            targets = list(self.clients.keys())
+            streams = [self._streams.get(ws) for ws in targets]
+        for stream in streams:
+            if stream is not None:
+                stream.close()
+        for ws in targets:
+            try:
+                ws.close(reason=close_code, message=message)
+            except Exception:
+                pass
+
+        def _delayed_shutdown():
+            time.sleep(0.5)
+            try:
+                import socket as socket_module
+                for ws in targets:
+                    try:
+                        ws.sock.shutdown(socket_module.SHUT_RDWR)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        threading.Thread(target=_delayed_shutdown, daemon=True).start()
+        return len(targets)
+
     def redirect_client(self, client_id, room_code):
         with self.clients_lock:
             target_ws = None

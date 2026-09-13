@@ -9,6 +9,8 @@ from app import app, limiter, sock
 from config import (
     FAST_FORWARD_SPEED,
     MAX_ROOMS,
+    OFFLINE_CLOSE_CODE,
+    OFFLINE_FLAG_PATH,
     ROOM_CODE_ALPHABET,
     ROOM_CODE_LENGTH,
     ROOM_SAVES_DIR,
@@ -362,6 +364,12 @@ def api_download_sav(room_code=None):
 
 
 def ws_handler(ws, room_code=None):
+    if OFFLINE_FLAG_PATH.exists():
+        try:
+            ws.close(reason=OFFLINE_CLOSE_CODE, message="gbserver is offline")
+        except Exception:
+            pass
+        return
     emu = get_emulator(room_code)
     if emu is None:
         return

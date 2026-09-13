@@ -10,7 +10,7 @@ from pathlib import Path
 from flask import jsonify, render_template, request
 
 from app import app, limiter
-from config import BASE_DIR, MAX_ROOMS, ROMS_DIR
+from config import BASE_DIR, MAX_ROOMS, OFFLINE_CLOSE_CODE, OFFLINE_FLAG_PATH, ROMS_DIR
 from engine_config import BOYTACEAN_AVAILABLE
 from rooms import default_emu, get_emulator, rooms, rooms_lock, create_room, shared_game_state
 
@@ -105,10 +105,46 @@ def _save_blocked_ips(ips):
 blocked_ips = _load_blocked_ips()
 
 
+def _is_offline():
+    return OFFLINE_FLAG_PATH.exists()
+
+
+def _set_offline(offline):
+    if offline:
+        OFFLINE_FLAG_PATH.write_text("offline")
+    else:
+        try:
+            OFFLINE_FLAG_PATH.unlink()
+        except FileNotFoundError:
+            pass
+
+
+OFFLINE_ALLOW_PREFIXES = (
+    "/dashboard",
+    "/api/dashboard/stats",
+    "/api/admin/",
+    "/static/",
+)
+
+
+def _offline_gate():
+    if not _is_offline():
+        return None
+    path = request.path
+    if any(path == prefix or path.startswith(prefix) for prefix in OFFLINE_ALLOW_PREFIXES):
+        return None
+    if request.path.startswith("/api/"):
+        return jsonify({"error": "gbserver is offline", "offline": True}), 503
+    return render_template("offline.html"), 503
+
+
 @app.before_request
 def _reject_blocked_ips():
     if request.remote_addr in blocked_ips:
         return jsonify({"error": "forbidden"}), 403
+    blocked = _offline_gate()
+    if blocked:
+        return blocked
 
 
 def _emu_stats(emu, include_clients=False):
@@ -162,6 +198,7 @@ def api_dashboard_stats():
         "rooms": room_stats,
         "is_admin": is_admin,
         "shared_game_enabled": shared_game_state["enabled"],
+        "offline": _is_offline(),
     }
     if is_admin:
         payload["blocked_ips"] = sorted(blocked_ips)
@@ -181,6 +218,35 @@ def api_admin_toggle_shared_game():
     shared_game_state["enabled"] = enabled
     _log_action("enable_shared_game" if enabled else "disable_shared_game")
     return jsonify({"ok": True, "enabled": enabled})
+
+
+@app.route("/api/admin/offline", methods=["POST"])
+@limiter.limit("30 per minute")
+def api_admin_offline():
+    if not _is_admin_request():
+        return jsonify({"error": "not authorized"}), 403
+    _set_offline(True)
+    with rooms_lock:
+        all_emus = [default_emu] + list(rooms.values())
+    for emu in all_emus:
+        try:
+            emu.close_all_clients(
+                close_code=OFFLINE_CLOSE_CODE, message="gbserver is offline"
+            )
+        except Exception as e:
+            print(f"[warn] error disconnecting clients while going offline: {e}")
+    _log_action("offline", "server taken offline")
+    return jsonify({"ok": True})
+
+
+@app.route("/api/admin/online", methods=["POST"])
+@limiter.limit("30 per minute")
+def api_admin_online():
+    if not _is_admin_request():
+        return jsonify({"error": "not authorized"}), 403
+    _set_offline(False)
+    _log_action("online", "server brought back online")
+    return jsonify({"ok": True})
 
 
 @app.route("/api/admin/kick", methods=["POST"])

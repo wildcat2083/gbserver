@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>gbserver is offline</title>
+  <style>
+    :root {
+      --offline-bg: #12141a;
+      --offline-panel: #1b1f29;
+      --offline-border: #2c3140;
+      --offline-text: #d8dee9;
+      --offline-muted: #7a8296;
+      --offline-accent: #f0a3ac;
+      --offline-accent-dark: #4a1e24;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background:
+        linear-gradient(rgba(10, 11, 15, 0.85), rgba(10, 11, 15, 0.85)),
+        url("/static/admin-bg.jpg") center / cover no-repeat fixed;
+      color: var(--offline-text);
+      padding: 24px;
+    }
+    .panel {
+      background: var(--offline-panel);
+      border: 1px solid var(--offline-border);
+      border-radius: 12px;
+      padding: 32px 28px;
+      max-width: 460px;
+      width: 100%;
+      text-align: center;
+    }
+    .icon {
+      width: 56px;
+      height: 56px;
+      margin: 0 auto 16px;
+      border-radius: 10px;
+      background: var(--offline-accent-dark);
+      border: 1px solid #6e2830;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.4rem;
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: 1.4rem;
+    }
+    p {
+      margin: 0 0 16px;
+      color: var(--offline-muted);
+      font-size: 0.9rem;
+      line-height: 1.5;
+    }
+    button {
+      background: #2c3140;
+      color: var(--offline-text);
+      border: 1px solid #3a3f52;
+      border-radius: 6px;
+      padding: 8px 18px;
+      font-size: 0.85rem;
+      cursor: pointer;
+    }
+    button:hover { background: #353b4d; border-color: #464d63; }
+  </style>
+</head>
+<body>
+  <div class="panel">
+    <div class="icon">&#9619;</div>
+    <h1>gbserver is offline</h1>
+    <p>This game server is currently disabled and unreachable. The admin may have taken it offline on purpose &mdash; please try again later.</p>
+    <button type="button" onclick="location.reload()">Try again</button>
+  </div>
+</body>
+</html>

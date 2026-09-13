@@ -11,6 +11,9 @@ KICK_CLOSE_CODE = 4001
 SHARED_DISABLED_CLOSE_CODE = 4002
 
 
+OFFLINE_CLOSE_CODE = 4003
+
+
 MSG_VIDEO = b"\x01"
 MSG_AUDIO = b"\x02"
 
@@ -40,6 +43,9 @@ ROOM_SAVES_DIR = BASE_DIR / "saves" / "rooms"
 ROMS_DIR.mkdir(exist_ok=True)
 SAVES_DIR.mkdir(exist_ok=True)
 ROOM_SAVES_DIR.mkdir(parents=True, exist_ok=True)
+
+
+OFFLINE_FLAG_PATH = BASE_DIR / "offline.flag"
 
 
 ENGINE_OVERRIDES_PATH = ROMS_DIR / "_engine_overrides.json"

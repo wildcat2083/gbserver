@@ -129,11 +129,22 @@
       color: #a3aec2;
       margin: 0 0 10px;
     }
+    #offlineBanner {
+      border: 1px solid #6e2830;
+      background: #3a151c;
+      color: #f0a3ac;
+      border-radius: 8px;
+      padding: 12px 16px;
+      font-size: 0.85rem;
+      margin-bottom: 20px;
+    }
   </style>
 </head>
 <body>
   <h1>gbserver dashboard</h1>
   <p class="subtitle">Live server stats - refreshes every few seconds. Room codes are hidden unless you're logged in as admin.</p>
+
+  <div id="offlineBanner" hidden>gbserver is OFFLINE &mdash; new connections are being rejected and all previously connected clients were disconnected. Only the dashboard remains reachable. Bring it back online below to resume service.</div>
 
   <div class="cards" id="summaryCards"></div>
 
@@ -141,6 +152,7 @@
     <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px;">
       <h2 style="margin: 0;">Shared game</h2>
       <button id="sharedGameToggleBtn" type="button" hidden style="background: #2c3140; color: #d8dee9; border: 1px solid #3a3f52; border-radius: 6px; padding: 5px 12px; font-size: 0.78rem; cursor: pointer;">Disable shared game</button>
+      <button id="offlineToggleBtn" type="button" hidden style="background: #2c3140; color: #d8dee9; border: 1px solid #3a3f52; border-radius: 6px; padding: 5px 12px; font-size: 0.78rem; cursor: pointer;">Take offline</button>
     </div>
     <table id="sharedTable">
       <thead>
@@ -228,6 +240,7 @@
     // credential like this rather than something merely convenient.
     let adminToken = null;
     let isAdmin = false;
+    let isOffline = false;
 
     function pill(on, textOn, textOff) {
       return `<span class="pill ${on ? "on" : "off"}">${on ? textOn : textOff}</span>`;
@@ -250,6 +263,7 @@
 
       const toggleBtn = document.getElementById("sharedGameToggleBtn");
       toggleBtn.hidden = !isAdmin;
+      document.getElementById("offlineToggleBtn").hidden = !isAdmin;
 
       document.getElementById("certificatesSection").hidden = !isAdmin;
       document.getElementById("blockedIpsSection").hidden = !isAdmin;
@@ -278,6 +292,36 @@
       toggleBtn.textContent = enabled ? "Disable shared game" : "Enable shared game";
       toggleBtn.dataset.enabled = enabled ? "true" : "false";
     }
+
+    function updateOfflineUI(data) {
+      isOffline = !!data.offline;
+      const btn = document.getElementById("offlineToggleBtn");
+      btn.textContent = isOffline ? "Bring online" : "Take offline";
+      btn.dataset.offline = isOffline ? "true" : "false";
+      document.getElementById("offlineBanner").hidden = !isOffline;
+    }
+
+    document.getElementById("offlineToggleBtn").addEventListener("click", async () => {
+      const currentlyOffline = document.getElementById("offlineToggleBtn").dataset.offline === "true";
+      const goingOffline = !currentlyOffline;
+      if (goingOffline && !confirm("Take gbserver OFFLINE? All connected clients will be disconnected and new connections rejected until you bring it back online.")) {
+        return;
+      }
+      try {
+        const res = await fetch(goingOffline ? "/api/admin/offline" : "/api/admin/online", {
+          method: "POST",
+          headers: { [ADMIN_TOKEN_HEADER]: `Bearer ${adminToken}` },
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          alert(`Couldn't change that: ${data.error || res.status}`);
+        }
+        refresh();
+      } catch (err) {
+        alert("Request failed - see console for details.");
+        console.error(err);
+      }
+    });
 
     document.getElementById("sharedGameToggleBtn").addEventListener("click", async () => {
       const currentlyEnabled = document.getElementById("sharedGameToggleBtn").dataset.enabled === "true";
@@ -320,6 +364,7 @@
         isAdmin = data.is_admin;
         updateAdminUI();
         updateSharedGameToggleButton(data.shared_game_enabled);
+        updateOfflineUI(data);
 
         document.getElementById("summaryCards").innerHTML = `
           <div class="card"><div class="label">Active rooms</div><div class="value">${data.active_room_count} / ${data.max_rooms}</div></div>
