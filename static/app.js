@@ -669,21 +669,18 @@
     const nSamples = int8Bytes.length / 2;
     if (nSamples < 1) return;
 
-    // --- Temporary diagnostic: raw capture for offline analysis ---
-    // Captures the EXACT bytes as received from the server, before any
-    // client-side processing (smoothing filter, WebAudio scheduling) -
-    // meant to isolate whether distortion is already present in the raw
-    // data itself versus introduced by live browser playback. Call
-    // __downloadAudioCapture() from the console to save what's been
-    // captured so far as a real .wav file, playable in Audacity/VLC/etc,
-    // completely independent of this page's own WebAudio pipeline.
-    window.__audioCapture = window.__audioCapture || [];
-    if (window.__audioCapture.reduce((n, c) => n + c.length, 0) < SAMPLE_RATE * 2 * 15) {
-      // Capped at ~15 seconds of stereo audio - plenty to hear a buzz,
-      // without letting this grow unbounded in memory.
-      window.__audioCapture.push(int8Bytes.slice());
+    // Raw capture, off unless explicitly armed - see __startAudioCapture.
+    // Tracks its own running byte total rather than reducing over a growing
+    // array on every chunk, so armed or not this stays O(1) per chunk.
+    if (captureArmed) {
+      if (captureBytes < captureLimitBytes) {
+        captureChunks.push(int8Bytes.slice());
+        captureBytes += int8Bytes.length;
+      } else {
+        captureArmed = false;
+        console.log(`[audio-capture] ${(captureBytes / (SAMPLE_RATE * 2)).toFixed(1)}s captured - call __downloadAudioCapture() to save it.`);
+      }
     }
-    // --- end raw-capture instrumentation ---
 
     const buffer = audioCtx.createBuffer(2, nSamples, SAMPLE_RATE);
     const left = buffer.getChannelData(0);
@@ -716,44 +713,7 @@
     source.connect(audioCtx.destination);
 
     const now = audioCtx.currentTime;
-    // --- Temporary diagnostic instrumentation for the buzzing report ---
-    // Logs the moment either correction branch actually fires, plus a
-    // periodic summary of chunk arrival timing - meant to be removed
-    // once the actual cause is confirmed, not a permanent addition.
-    window.__audioDiag = window.__audioDiag || {
-      fellBehindCount: 0, resetCount: 0, chunkCount: 0, stretchCount: 0,
-      lastArrival: null, minGapMs: Infinity, maxGapMs: 0,
-      minCushionMs: Infinity,
-      lastSummary: now,
-    };
-    const diag = window.__audioDiag;
-    diag.chunkCount++;
-    if (diag.lastArrival !== null) {
-      const gapMs = (now - diag.lastArrival) * 1000;
-      if (gapMs < diag.minGapMs) diag.minGapMs = gapMs;
-      if (gapMs > diag.maxGapMs) diag.maxGapMs = gapMs;
-    }
-    diag.lastArrival = now;
-    const cushionMs = (nextStartTime - now) * 1000;
-    if (cushionMs < diag.minCushionMs) diag.minCushionMs = cushionMs;
-    if (nextStartTime < now) {
-      diag.fellBehindCount++;
-      console.warn(`[audio-diag] UNDERRAN by ${(-cushionMs).toFixed(1)}ms (lost that much audio; no gap inserted) - chunk #${diag.chunkCount}`);
-    } else if (cushionMs < TARGET_LATENCY * 1000 * 0.5) {
-      diag.stretchCount++;   // only count meaningful pulls, not idle trimming
-    }
-    if (nextStartTime > now + MAX_SCHEDULE_AHEAD) {
-      diag.resetCount++;
-      console.warn(`[audio-diag] SCHEDULE RESET - was ${cushionMs.toFixed(1)}ms ahead - chunk #${diag.chunkCount}`);
-    }
-    if (now - diag.lastSummary > 2) {
-      console.log(`[audio-diag] summary: ${diag.chunkCount} chunks, ${diag.fellBehindCount} underruns, ${diag.resetCount} resets, ${diag.stretchCount} stretched, cushion min ${diag.minCushionMs.toFixed(1)}ms, gap range ${diag.minGapMs.toFixed(1)}-${diag.maxGapMs.toFixed(1)}ms, this chunk had ${nSamples} samples`);
-      diag.lastSummary = now;
-      diag.minGapMs = Infinity;
-      diag.maxGapMs = 0;
-      diag.minCushionMs = Infinity;
-    }
-    // --- end diagnostic instrumentation ---
+    if (diag) recordDiag(now, nSamples);
     if (nextStartTime < now) {
       // Underrun. Whatever should have played between nextStartTime and now
       // is already gone - but that's typically only a millisecond or two.
@@ -787,12 +747,92 @@
     nextStartTime += buffer.duration / rate;
   }
 
-  // --- Temporary diagnostic: export the raw capture above as a real .wav
-  // file, playable in any independent tool (Audacity, VLC, etc.) -
-  // entirely outside this page's own WebAudio pipeline. If the buzz is
-  // audible in THIS file, it's baked into the data the server sends,
-  // not introduced by live browser playback. Call from the console:
-  //   __downloadAudioCapture()
+  // --- Audio diagnostics (opt-in) --------------------------------------
+  //
+  // Both of these used to run unconditionally on every chunk. They earned
+  // their keep while tracking down the buzz and the dropouts, but neither
+  // is free - the capture held 15s of stereo PCM in memory whether anyone
+  // wanted it or not, and the scheduling log wrote to the console every two
+  // seconds for the life of the session. They're kept, off by default,
+  // because they're exactly what you'd want again if any of this regresses.
+  //
+  // From the browser console:
+  //   __startAudioCapture()       arm the raw capture (default 15s)
+  //   __downloadAudioCapture()    save it as a .wav
+  //   __audioDiagnostics(true)    start logging scheduling behaviour
+  //   __audioDiagnostics(false)   stop, and print a final summary
+
+  let captureArmed = false;
+  let captureChunks = [];
+  let captureBytes = 0;
+  let captureLimitBytes = 0;
+
+  window.__startAudioCapture = function (seconds = 15) {
+    captureChunks = [];
+    captureBytes = 0;
+    captureLimitBytes = Math.round(SAMPLE_RATE * 2 * seconds);
+    captureArmed = true;
+    console.log(`[audio-capture] armed for ${seconds}s - play something, then call __downloadAudioCapture().`);
+  };
+
+  // Captures the EXACT bytes as received from the server, before any
+  // client-side processing (the smoothing filter, WebAudio scheduling), so
+  // the resulting file answers "is this baked into what the server sent, or
+  // introduced by live playback here?" independently of this page.
+  let diag = null;
+
+  function recordDiag(now, nSamples) {
+    diag.chunkCount++;
+    if (diag.lastArrival !== null) {
+      const gapMs = (now - diag.lastArrival) * 1000;
+      if (gapMs < diag.minGapMs) diag.minGapMs = gapMs;
+      if (gapMs > diag.maxGapMs) diag.maxGapMs = gapMs;
+    }
+    diag.lastArrival = now;
+    const cushionMs = (nextStartTime - now) * 1000;
+    if (cushionMs < diag.minCushionMs) diag.minCushionMs = cushionMs;
+    if (nextStartTime < now) {
+      diag.underrunCount++;
+      console.warn(`[audio-diag] UNDERRAN by ${(-cushionMs).toFixed(1)}ms (lost that much audio; no gap inserted) - chunk #${diag.chunkCount}`);
+    } else if (cushionMs < TARGET_LATENCY * 1000 * 0.5) {
+      diag.stretchCount++;   // only count meaningful pulls, not idle trimming
+    }
+    if (nextStartTime > now + MAX_SCHEDULE_AHEAD) {
+      diag.resetCount++;
+      console.warn(`[audio-diag] SCHEDULE RESET - was ${cushionMs.toFixed(1)}ms ahead - chunk #${diag.chunkCount}`);
+    }
+    if (now - diag.lastSummary > 2) {
+      console.log(diagSummary(nSamples));
+      diag.lastSummary = now;
+      diag.minGapMs = Infinity;
+      diag.maxGapMs = 0;
+      diag.minCushionMs = Infinity;
+    }
+  }
+
+  function diagSummary(nSamples) {
+    return `[audio-diag] ${diag.chunkCount} chunks, ${diag.underrunCount} underruns, `
+      + `${diag.resetCount} resets, ${diag.stretchCount} stretched, `
+      + `cushion min ${diag.minCushionMs.toFixed(1)}ms, `
+      + `gap range ${diag.minGapMs.toFixed(1)}-${diag.maxGapMs.toFixed(1)}ms`
+      + (nSamples ? `, this chunk had ${nSamples} samples` : "");
+  }
+
+  window.__audioDiagnostics = function (on = true) {
+    if (!on) {
+      if (diag) console.log("[audio-diag] stopped. " + diagSummary(0));
+      diag = null;
+      return;
+    }
+    diag = {
+      underrunCount: 0, resetCount: 0, chunkCount: 0, stretchCount: 0,
+      lastArrival: null, minGapMs: Infinity, maxGapMs: 0,
+      minCushionMs: Infinity,
+      lastSummary: audioCtx ? audioCtx.currentTime : 0,
+    };
+    console.log("[audio-diag] logging scheduling behaviour - __audioDiagnostics(false) to stop.");
+  };
+
   function _buildWavFromInt8Chunks(chunks, sampleRate) {
     const totalBytes = chunks.reduce((n, c) => n + c.length, 0);
     const numChannels = 2;
@@ -834,9 +874,9 @@
   }
 
   window.__downloadAudioCapture = function () {
-    const chunks = window.__audioCapture || [];
+    const chunks = captureChunks;
     if (chunks.length === 0) {
-      console.warn("No audio captured yet - play for a few seconds first, then try again.");
+      console.warn("No audio captured - call __startAudioCapture() first, then play for a few seconds.");
       return;
     }
     const wavBuffer = _buildWavFromInt8Chunks(chunks, SAMPLE_RATE);
@@ -849,7 +889,7 @@
     a.click();
     a.remove();
     URL.revokeObjectURL(url);
-    console.log(`Downloaded raw_audio_capture.wav - ${chunks.length} chunks, ${(chunks.reduce((n, c) => n + c.length, 0) / (SAMPLE_RATE * 2)).toFixed(1)}s captured.`);
+    console.log(`Downloaded raw_audio_capture.wav - ${chunks.length} chunks, ${(captureBytes / (SAMPLE_RATE * 2)).toFixed(1)}s captured.`);
   };
 
   // --- WebSocket (video + audio in, button presses out) ---------------------

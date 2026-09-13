@@ -47,6 +47,114 @@ from emu_worker import run_worker
 # the worker process itself has died, not that it's just slow.
 ACK_TIMEOUT_SECONDS = 10
 
+# --- Per-client outbound pump ---------------------------------------------
+
+class _ClientStream:
+    """One outbound queue and one sender thread per connected WebSocket.
+
+    Everything used to be written straight from whichever thread produced
+    it - the worker drain thread for video and audio, a request thread for
+    controller/chat notifications - by calling ws.send() in a loop over
+    every client. ws.send() on flask-sock is a blocking socket write, so a
+    single client whose TCP window was full (a phone on weak wifi, a laptop
+    that just went to sleep) stalled that loop, and with it every OTHER
+    client's stream. Video and audio shared the same thread too, so a slow
+    frame delayed sound directly. That showed up as arrival gaps of 130-150ms
+    at the browser against a 67ms nominal spacing.
+
+    Now producers only ever append to a bounded deque, which never blocks,
+    and each client's own thread does the actual writing. A slow client now
+    only slows itself down.
+
+    The queue is bounded per message kind rather than just overall, because
+    the right thing to discard differs:
+
+      video   - a stale frame is worthless; a newer one is right behind it.
+                Keep only the most recent few and drop the rest.
+      audio   - dropping is audible, but so is unbounded latency growth, and
+                a client that far behind can't use the backlog anyway. Cap it
+                at roughly a second and drop oldest-first beyond that.
+      control - small, rare, and order-sensitive (controller status, chat,
+                redirects). Never dropped.
+    """
+
+    MAX_VIDEO_QUEUED = 3     # ~50ms of frames; bounds memory to ~45KB/client
+    MAX_AUDIO_QUEUED = 12    # ~0.8s at AUDIO_BATCH_TICKS=4
+    MAX_TOTAL_QUEUED = 128   # backstop; chat catch-up alone can be ~50 items
+
+    def __init__(self, ws, on_dead):
+        self.ws = ws
+        self._on_dead = on_dead
+        self._cv = threading.Condition()
+        self._queue = deque()
+        self._closed = False
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def send(self, payload, kind="control"):
+        """Queues `payload`. Never blocks and never raises - a write that
+        fails is discovered by the sender thread, which reports it through
+        on_dead exactly once."""
+        with self._cv:
+            if self._closed:
+                return
+            if kind == "video":
+                self._trim(kind, self.MAX_VIDEO_QUEUED)
+            elif kind == "audio":
+                self._trim(kind, self.MAX_AUDIO_QUEUED)
+            if len(self._queue) >= self.MAX_TOTAL_QUEUED:
+                # Shouldn't be reachable given the per-kind caps above, but
+                # if it is, shed the oldest droppable thing rather than
+                # letting this grow without limit.
+                for i, (k, _) in enumerate(self._queue):
+                    if k != "control":
+                        del self._queue[i]
+                        break
+                else:
+                    return  # all control messages - drop the incoming one instead
+            self._queue.append((kind, payload))
+            self._cv.notify()
+
+    def _trim(self, kind, limit):
+        """Drops oldest entries of `kind` until fewer than `limit` remain.
+        Caller must hold self._cv."""
+        while sum(1 for k, _ in self._queue if k == kind) >= limit:
+            for i, (k, _) in enumerate(self._queue):
+                if k == kind:
+                    del self._queue[i]
+                    break
+            else:
+                return
+
+    def _run(self):
+        while True:
+            with self._cv:
+                while not self._queue and not self._closed:
+                    self._cv.wait()
+                if not self._queue:
+                    return  # closed and drained
+                _kind, payload = self._queue.popleft()
+            try:
+                self.ws.send(payload)
+            except Exception:
+                # The ws_handler's own finally: block calls remove_client for
+                # every disconnect, so this only needs to stop the pump and
+                # let the Emulator drop its bookkeeping early - it isn't the
+                # sole cleanup path.
+                self.close()
+                try:
+                    self._on_dead(self.ws)
+                except Exception:
+                    pass
+                return
+
+    def close(self):
+        with self._cv:
+            self._closed = True
+            self._queue.clear()
+            self._cv.notify()
+
+
 # --- Emulator (one instance per session - the default game, or a room) ----
 
 class Emulator:
@@ -57,6 +165,7 @@ class Emulator:
                                        # (dict used as an ordered set - the first key is
                                        # the current controller; see is_controller())
         self.clients_lock = threading.Lock()
+        self._streams = {}            # ws -> _ClientStream (its outbound pump)
         self.audio_batch_ticks = AUDIO_BATCH_TICKS  # live-adjustable via /api/audio-batch
         self.last_activity = time.time()  # used to reap abandoned private rooms
         self._last_frame_compressed = None  # cached, for newly-joining clients
@@ -158,9 +267,9 @@ class Emulator:
 
             if msg_type == "video":
                 self._last_frame_compressed = msg["data"]
-                self._broadcast(MSG_VIDEO + msg["data"])
+                self._broadcast(MSG_VIDEO + msg["data"], "video")
             elif msg_type == "audio":
-                self._broadcast(MSG_AUDIO + msg["data"])
+                self._broadcast(MSG_AUDIO + msg["data"], "audio")
             elif msg_type == "status":
                 self._current_rom_name = msg["current_rom"]
                 self.engine_name = msg["engine"]
@@ -483,33 +592,44 @@ class Emulator:
         anyone watching who *didn't* click Stop themselves also sees the
         screen go blank immediately, instead of staying frozen on the last
         frame until they happen to refresh."""
-        with self.clients_lock:
-            clients = list(self.clients)
-        for ws in clients:
-            try:
-                ws.send("stopped")
-            except Exception:
-                pass
+        self._broadcast("stopped")
 
-    def _broadcast(self, frame_bytes):
-        dead = []
+    def _send(self, ws, payload, kind="control"):
+        """Queues one message to one client. Non-blocking; silently no-ops
+        for a client that's already gone."""
         with self.clients_lock:
-            clients = list(self.clients)
-        for ws in clients:
-            try:
-                ws.send(frame_bytes)
-            except Exception:
-                dead.append(ws)
-        if dead:
-            with self.clients_lock:
-                for ws in dead:
-                    self.clients.pop(ws, None)
-            self._notify_controller_status()  # dropped client may have been the controller
+            stream = self._streams.get(ws)
+        if stream is None:
+            return False
+        stream.send(payload, kind)
+        return True
+
+    def _broadcast(self, payload, kind="control"):
+        with self.clients_lock:
+            streams = list(self._streams.values())
+        for stream in streams:
+            stream.send(payload, kind)
+
+    def _on_stream_dead(self, ws):
+        """Called from a client's own sender thread when its socket fails.
+        Drops the client early rather than waiting for its receive loop to
+        notice - remove_client still runs later from the ws_handler's
+        finally: block, and is safe to run twice."""
+        with self.clients_lock:
+            existed = self.clients.pop(ws, None) is not None
+            stream = self._streams.pop(ws, None)
+            self._client_remote_addrs.pop(ws, None)
+        if stream is not None:
+            stream.close()
+        if existed:
+            self._notify_controller_status()  # it may have been the controller
 
     def add_client(self, ws, client_id=None, remote_addr=None):
+        stream = _ClientStream(ws, self._on_stream_dead)
         with self.clients_lock:
             self.clients[ws] = client_id
             self._client_remote_addrs[ws] = remote_addr
+            self._streams[ws] = stream
         self.touch()
         self._notify_controller_status()
         self._cancel_empty_grace_timer()  # someone (re)connected - don't clear/stop out from under them
@@ -520,27 +640,21 @@ class Emulator:
         # have to wait for the next real change (which might not happen for
         # a while on a static/menu screen).
         if self._last_frame_compressed is not None:
-            try:
-                ws.send(MSG_VIDEO + self._last_frame_compressed)
-            except Exception:
-                pass
+            self._send(ws, MSG_VIDEO + self._last_frame_compressed, "video")
         # Catch this new client up on recent chat, so joining partway
         # through a conversation isn't just silence.
         for entry in self.chat_history:
-            try:
-                ws.send("chatmsg:" + json.dumps(entry))
-            except Exception:
-                pass
-        try:
-            ws.send("fastforward:1" if self.fast_forward else "fastforward:0")
-        except Exception:
-            pass
+            self._send(ws, "chatmsg:" + json.dumps(entry))
+        self._send(ws, "fastforward:1" if self.fast_forward else "fastforward:0")
 
     def remove_client(self, ws):
         with self.clients_lock:
             was_controller = bool(self.clients) and next(iter(self.clients)) is ws
             self.clients.pop(ws, None)
+            stream = self._streams.pop(ws, None)
             now_empty = len(self.clients) == 0
+        if stream is not None:
+            stream.close()
         self._chat_rate_limits.pop(ws, None)
         self._client_remote_addrs.pop(ws, None)
         if self.pending_control_requester is ws:
@@ -750,6 +864,12 @@ class Emulator:
                     target_ws = ws
                     break
         if target_ws is not None:
+            # Stop the pump first, so nothing queued gets written into a
+            # socket that's mid-close.
+            with self.clients_lock:
+                stream = self._streams.get(target_ws)
+            if stream is not None:
+                stream.close()
             try:
                 target_ws.close(reason=KICK_CLOSE_CODE, message="Disconnected by an admin")
             except Exception:
@@ -794,11 +914,7 @@ class Emulator:
                     break
         if target_ws is None:
             return False
-        try:
-            target_ws.send(f"redirect:{room_code}")
-        except Exception:
-            return False
-        return True
+        return self._send(target_ws, f"redirect:{room_code}")
 
     def has_client(self, client_id):
         """True if a client with this ID is currently connected - used to
@@ -829,10 +945,7 @@ class Emulator:
                 return  # nobody connected, or already the controller
             controller_ws = next(iter(self.clients))
             self.pending_control_requester = ws
-        try:
-            controller_ws.send("controlrequested:1")
-        except Exception:
-            pass
+        self._send(controller_ws, "controlrequested:1")
 
     def grant_control(self, granter_ws):
         """The current controller hands control to whoever most recently
@@ -883,19 +996,7 @@ class Emulator:
         role = "controller" if self.is_controller(ws) else "viewer"
         entry = {"role": role, "name": name, "text": text, "ts": time.time()}
         self.chat_history.append(entry)
-        payload = "chatmsg:" + json.dumps(entry)
-        dead = []
-        with self.clients_lock:
-            clients = list(self.clients)
-        for client_ws in clients:
-            try:
-                client_ws.send(payload)
-            except Exception:
-                dead.append(client_ws)
-        if dead:
-            with self.clients_lock:
-                for client_ws in dead:
-                    self.clients.pop(client_ws, None)
+        self._broadcast("chatmsg:" + json.dumps(entry))
 
     def controller_client_id(self):
         """The client_id (sent by the browser on WS connect) belonging to
@@ -926,21 +1027,11 @@ class Emulator:
         controller = clients[0] if clients else None
         viewer_count = max(0, len(clients) - 1)
         for ws in clients:
-            try:
-                ws.send("controller:1" if ws is controller else "controller:0")
-                ws.send(f"viewers:{viewer_count}")
-            except Exception:
-                pass
+            self._send(ws, "controller:1" if ws is controller else "controller:0")
+            self._send(ws, f"viewers:{viewer_count}")
 
     def _notify_fast_forward_status(self):
         """Broadcasts the current fast-forward state to every connected
         client, so a viewer's UI reflects it too, not just whoever
         toggled it."""
-        with self.clients_lock:
-            clients = list(self.clients)
-        payload = "fastforward:1" if self.fast_forward else "fastforward:0"
-        for ws in clients:
-            try:
-                ws.send(payload)
-            except Exception:
-                pass
+        self._broadcast("fastforward:1" if self.fast_forward else "fastforward:0")

@@ -31,44 +31,54 @@ MSG_AUDIO = b"\x02"
 
 # PyBoy's sound buffer is fixed at int8 (256 amplitude levels) - this is a
 # hardware/emulation-accuracy limitation, not something the sample rate
-# affects. 48000 Hz is PyBoy's own tested default (its buffer sizing math
-# is validated against it); 24000 also works. Only values where
-# rate % 60 == 0 are accepted by PyBoy - e.g. 44800 is NOT valid and will
-# fail an internal assertion.
+# affects. Only values where rate % 60 == 0 are accepted by PyBoy - e.g.
+# 44800 is NOT valid and will fail an internal assertion.
 #
-# EXPERIMENTAL, temporary bump from 24000 to 36000 - being tried to help
-# diagnose a reported buzz on the web version's audio that ISN'T present
-# via play_headed.py's native SDL2 output. That comparison turned out not
-# to be a clean one though: play_headed.py never sets sound_sample_rate,
-# so it runs at PyBoy's 48000 default, not the 24000 this worker forces -
-# a real, previously undetected difference between the two, not just
-# "streaming vs local playback." 24kHz's Nyquist limit (12kHz) is well
-# within range for some Game Boy leads/noise-channel effects, so aliasing
-# specifically at this rate is plausible. Not jumping straight back to
-# 48000 though - the "overran on this hardware" note below is a genuine,
-# previously-confirmed finding on this exact Pi, not a guess, and buffer
-# underruns from the worker failing to keep up in real time can ALSO
-# sound like buzzing/crackling, which would confuse this test rather than
-# resolve it. 36000 is a real midpoint - closer to full quality, still a
-# meaningful step down from the rate that's documented to have caused
-# problems before.
-SOUND_SAMPLE_RATE = 36000  # Hz - must divide evenly into 60 (48000 overran on this hardware)
+# This was raised from 24000 to 36000 while chasing a buzz on the web
+# version that wasn't present via play_headed.py's SDL2 output. The rate
+# turned out to have nothing to do with it: the buzz was pyboy.sound.ndarray
+# slicing its buffer with a flat byte index against an axis measured in
+# stereo samples, which appended a stale sample to every frame - a 60 Hz
+# impulse train. emu_worker.py's grab_audio() reads raw_buffer_head // 2
+# out of raw_ndarray instead, which is what the SDL2 path effectively does,
+# and that's why the two now sound the same. See grab_audio's docstring.
+#
+# 36000 is kept rather than reverted: it's a genuine quality improvement
+# over 24000 (Nyquist 18kHz vs 12kHz, which matters for the noise channel
+# and high leads), and the worker holds a measured 60.00 fps at this rate
+# on the Pi 5, so the "48000 overran on this hardware" finding that
+# originally forced 24000 doesn't apply here. Going to 48000 would need
+# re-testing against that; check `journalctl -u gbserver` for the worker's
+# own fps line before and after if you try it.
+SOUND_SAMPLE_RATE = 36000  # Hz - must divide evenly into 60
 
-# PyBoy's own master volume (0-100), applied to its internal 4-channel
-# mix BEFORE it's ever reduced to int8 samples and sent out. Was 100
-# (maximum, zero headroom) - the Game Boy's 4 sound channels are mixed
-# together internally, and int8 has very little range (256 levels) to
-# begin with, so any moment several channels constructively peak
-# together at full volume pushes the combined mix past what int8 can
-# represent, heard as an intermittent buzz riding on top of certain
-# tones/chords specifically, not a constant hum - it only appears when
-# that peak-overlap actually happens, not all the time. This can't be
-# fixed client-side (turning down playback volume after the fact just
-# makes an already-clipped waveform quieter, not clean) - the headroom
-# has to exist before the mixed signal is ever reduced to int8, which is
-# what this value controls. 85 leaves a reasonable margin below full
-# scale; lower it further (e.g. 70) if buzzing is still audible on
-# particularly dense/loud passages.
+# PyBoy's sound_volume constructor argument (0-100).
+#
+# CORRECTION: this value has no effect in this deployment, and the
+# clipping theory it was originally set for was wrong on both counts.
+#
+# It does not reach the sample data. PyBoy stores it as Sound.volume and
+# reads it in exactly two places - window_sdl2.py (as the SDL_MixAudioFormat
+# gain) and window_openal.py (as AL_GAIN). Both are output plugins. This
+# server runs window="null", so neither is loaded and nothing ever applies
+# it; core/sound.py's sample() never multiplies by it.
+#
+# And there was no clipping to leave headroom for. sample() sums the four
+# channels, each of which returns 0-15, then clamps to 0..127 - so the
+# maximum attainable value is 60, less than half of what int8 can hold.
+# The clamp is unreachable. The intermittent buzz this was set to fix was
+# the sound.ndarray over-read described above, which is fixed in
+# emu_worker.py.
+#
+# The real signal problem was the opposite of too much level: PyBoy's mix
+# is UNIPOLAR (0..60, never negative), so it carries a large DC offset and
+# uses under a quarter of the transport's range. emu_worker.py now applies
+# a 20 Hz DC-blocking high-pass and a 2x gain before sending - that's the
+# equivalent of the coupling capacitor on real DMG hardware, and it's what
+# actually governs output level now. Tune AUDIO_GAIN there, not this.
+#
+# Left at 85 rather than removed so the constructor signature stays
+# explicit; change it to 100 freely, it makes no difference here.
 SOUND_VOLUME = 85
 
 # Sending one WebSocket audio message per emulator tick (~16.7ms) means the

@@ -36,6 +36,7 @@ Output messages (dicts), sent on out_queue:
   {"type": "stopped"}
   {"type": "ack", "req_id": N, "ok": True/False, "error": <str or None>}
 """
+import math
 import queue
 import time
 import zlib
@@ -64,6 +65,39 @@ def run_worker(cmd_queue, out_queue, roms_dir, saves_dir, sound_sample_rate,
     # this installed PyBoy version actually gets right - see grab_audio
     # below for the full reasoning. None = not probed yet.
     audio_accessor = None
+
+    # DC-blocking high-pass, applied to every tick's audio before it leaves
+    # this process. PyBoy's mixer sums four channels of 0-15 and clamps the
+    # result to 0..127 (see core/sound.py's sample()), so its output is
+    # UNIPOLAR - it never goes negative, and a playing note sits on a DC
+    # pedestal of roughly +15 to +30 rather than swinging around zero. Real
+    # DMG hardware has a coupling capacitor on the headphone output that
+    # removes exactly this; PyBoy's raw buffer models the mixer but not the
+    # analogue output stage, so the offset arrives intact.
+    #
+    # Two things it costs us. Any interruption in playback - a stop, a ROM
+    # load, the browser's schedule snapping back - jumps from that pedestal
+    # to true zero and back, which is a thump rather than a subtle seam. And
+    # because the signal only ever occupies 0..60 of int8's 256 levels, more
+    # than three quarters of the range sits unused.
+    #
+    # 20 Hz is below anything the Game Boy's channels actually produce, so
+    # this removes the offset without touching real bass content. One pole:
+    #   y[n] = x[n] - x[n-1] + R*y[n-1]
+    DC_CUTOFF_HZ = 20.0
+    dc_r = math.exp(-2.0 * math.pi * DC_CUTOFF_HZ / sound_sample_rate)
+    # Filter state, per channel, carried across ticks so there's no seam at
+    # tick boundaries. Reset on ROM load - see do_load_rom.
+    dc_prev_x = np.zeros(2, dtype=np.float64)
+    dc_prev_y = np.zeros(2, dtype=np.float64)
+    # Once centred on zero the signal swings roughly +/-30, so doubling puts
+    # it at +/-60 and, on a worst-case full 0->60 square, +/-120 - inside
+    # int8 with margin to spare (verified against a synthesised worst case).
+    # This adds no information that wasn't already there; the source is only
+    # 61 distinct levels either way. What it buys is that those levels are
+    # no longer squeezed into a quarter of the transport's range, so the
+    # int8 rounding on the way out costs proportionally less.
+    AUDIO_GAIN = 2.0
 
     # This loop, not PyBoy, owns frame pacing now (see set_emulation_speed(0)
     # in do_load_rom and the sleep at the bottom of the loop). next_frame is
@@ -134,6 +168,7 @@ def run_worker(cmd_queue, out_queue, roms_dir, saves_dir, sound_sample_rate,
         nonlocal pyboy, rom_path, engine_name, running, fast_forward
         nonlocal last_frame_raw, audio_accum, frame_no, active_cheats
         nonlocal next_frame, fps_window_start, fps_frames
+        nonlocal dc_prev_x, dc_prev_y
 
         # Cheats reset on every load/reload, deliberately - including the
         # same-ROM "Resume save"/Reset cases below, not just switching to
@@ -242,6 +277,11 @@ def run_worker(cmd_queue, out_queue, roms_dir, saves_dir, sound_sample_rate,
         next_frame = time.monotonic()
         fps_window_start = next_frame
         fps_frames = 0
+        # Carrying filter state across a load would settle the new session's
+        # first few ms against the previous game's DC level, which isn't a
+        # meaningful starting point.
+        dc_prev_x = np.zeros(2, dtype=np.float64)
+        dc_prev_y = np.zeros(2, dtype=np.float64)
 
         send_status()
         return save_load_error
@@ -387,9 +427,43 @@ def run_worker(cmd_queue, out_queue, roms_dir, saves_dir, sound_sample_rate,
             return None
         if arr is None or arr.size == 0:
             return None
-        # .tobytes() always copies, which matters here: raw_ndarray is a
-        # live view onto the buffer PyBoy overwrites on the next tick.
-        return np.ascontiguousarray(arr).tobytes()
+        # .astype() below already copies, which matters here: raw_ndarray is
+        # a live view onto the buffer PyBoy overwrites on the next tick.
+        return dc_block(arr)
+
+    def dc_block(arr_i8):
+        """Removes the DC offset from one tick's samples and scales the
+        result up to use more of int8's range. See the DC_CUTOFF_HZ comment
+        near the top of run_worker for why this is needed at all.
+
+        The recursion y[n] = R*y[n-1] + d[n] is solved in closed form rather
+        than looped in Python, which would be ~72,000 iterations a second on
+        the Pi:
+
+            y[n] = R^n * (y[-1] + sum_{k<=n} d[k] * R^-k)
+
+        R^-n is the thing to watch - it grows as the block gets longer. At
+        one tick's worth (600 samples at 36 kHz) it reaches about 8, which
+        float64 handles with enormous margin; checked against a plain
+        reference loop and the two agree to ~1e-13. Filtering per tick
+        rather than per batch is what keeps that exponent small, so don't
+        move this to the batch send point without re-checking it.
+        """
+        nonlocal dc_prev_x, dc_prev_y
+        x = arr_i8.astype(np.float64)          # (n, 2), copies off the live buffer
+        n = x.shape[0]
+
+        d = np.empty_like(x)
+        d[0] = x[0] - dc_prev_x
+        d[1:] = x[1:] - x[:-1]
+
+        pw = (dc_r ** np.arange(1, n + 1))[:, None]
+        y = pw * (dc_prev_y + np.cumsum(d / pw, axis=0))
+
+        dc_prev_x = x[-1].copy()
+        dc_prev_y = y[-1].copy()
+
+        return np.clip(np.rint(y * AUDIO_GAIN), -127, 127).astype(np.int8).tobytes()
 
     def handle_command(msg):
         cmd = msg.get("cmd")
