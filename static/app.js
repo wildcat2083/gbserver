@@ -47,7 +47,7 @@
   const toggleControlsBtn = document.getElementById("toggleControlsBtn");
   const imageData = ctx.createImageData(WIDTH, HEIGHT);
 
-  // --- WebGL video filters (Off / Smooth / Smart smooth) -----------------
+  // --- WebGL video filters (Off / Smooth / Smart smooth / HQ2x) ----------
   //
   // "Smooth" is a single call to the GPU's own built-in bilinear texture
   // sampling - not really custom logic, just asking for LINEAR instead of
@@ -71,6 +71,8 @@
   let currentFilter = "off";
   const SMOOTHNESS_KEY = "gbserver.smartSmoothness";
   let smartSmoothness = 2.0; // matches the value this used to be hardcoded at
+  const HQ2X_KEY = "gbserver.hq2xStrength";
+  let hq2xStrength = 1.0;    // 1 = full rounding, 0 = identical to Off
   const THEME_KEY = "gbserver.theme";
   const VALID_THEMES = ["dmg", "pocket", "grape", "light-yellow", "dark", "clearshell"];
   let glState = null; // set up lazily on first non-"off" selection
@@ -173,6 +175,94 @@
     }
   `;
 
+  // HQ2x-style edge-directed doubling.
+  //
+  // Every filter above renders one fragment per SOURCE pixel, so none of
+  // them can actually change the shape of anything - there is nowhere to
+  // put a rounded corner. They soften the image and the browser's own
+  // upscale does the rest. This one is different: the GL canvas is switched
+  // to a 320x288 backing store while it's selected (see
+  // applyFilterVisibility), so each source pixel becomes four output
+  // pixels and a staircase can genuinely be redrawn as a diagonal. The
+  // browser then scales that up smoothly to the displayed size, which is
+  // the "and smoothing on top" half.
+  //
+  // ON THE NAME: this is an ORIGINAL implementation in the HQx family, not
+  // a port of Maxim Stepin's hq2x. That algorithm works from a 256-entry
+  // lookup table built from the 3x3 neighbourhood pattern, and that table
+  // is the copyrighted part of it. What's reproduced here is the published
+  // idea rather than the code: classify each of the four neighbours as
+  // similar or different using a YUV-weighted threshold, then, for each
+  // output quadrant, round the corner when the two neighbours meeting there
+  // agree with each other but disagree with the two across from them.
+  //
+  // The YUV thresholds (48/256, 7/256, 6/256 luma/U/V) are the published
+  // HQx constants. Weighting luma far above chroma is what makes two shades
+  // of the same colour count as "similar" while a real edge does not.
+  //
+  // The comparison rule is deliberately conservative - it only fires on an
+  // unambiguous staircase corner. Verified on real frames: a flat field is
+  // returned bit-identical, a 1px checkerboard stays a checkerboard rather
+  // than collapsing to grey, and a 45-degree edge goes from 2px blocks to a
+  // clean 1px-per-row diagonal.
+  const GL_FRAGMENT_HQ2X_SRC = `
+    // highp where it exists. The quadrant test is fract(vTexCoord * 160.0),
+    // and mediump only guarantees ~10 bits of mantissa - at a magnitude of
+    // 160 that leaves absolute steps coarser than 0.1, which is enough to
+    // put fract() in the wrong half and scatter the rounding into noise.
+    // Desktop drivers usually promote mediump to highp and hide this; phone
+    // GPUs generally do not.
+    #ifdef GL_FRAGMENT_PRECISION_HIGH
+    precision highp float;
+    #else
+    precision mediump float;
+    #endif
+    varying vec2 vTexCoord;
+    uniform sampler2D uTexture;
+    uniform vec2 uTextureSize;
+    uniform float uStrength;
+
+    bool differ(vec3 a, vec3 b) {
+      vec3 d = a - b;
+      float y = dot(d, vec3( 0.299,  0.587,  0.114));
+      float u = dot(d, vec3(-0.169, -0.331,  0.500));
+      float v = dot(d, vec3( 0.500, -0.419, -0.081));
+      return abs(y) > 0.188 || abs(u) > 0.027 || abs(v) > 0.031;
+    }
+
+    void main() {
+      vec2 texel = 1.0 / uTextureSize;
+      vec2 texelPos = vTexCoord * uTextureSize;
+      vec2 center = (floor(texelPos) + 0.5) * texel;
+      // Which of the source pixel's four quadrants this fragment lands in.
+      // At a 2x backing store this is exact: 0.25 or 0.75, never ambiguous.
+      vec2 q = step(0.5, fract(texelPos));
+
+      vec3 E = texture2D(uTexture, center).rgb;
+      vec3 B = texture2D(uTexture, center + vec2(0.0, -texel.y)).rgb;
+      vec3 H = texture2D(uTexture, center + vec2(0.0,  texel.y)).rgb;
+      vec3 D = texture2D(uTexture, center + vec2(-texel.x, 0.0)).rgb;
+      vec3 F = texture2D(uTexture, center + vec2( texel.x, 0.0)).rgb;
+
+      // The two neighbours that meet at this quadrant's outer corner, and
+      // the two directly across from them.
+      vec3 vNear = (q.y < 0.5) ? B : H;
+      vec3 vFar  = (q.y < 0.5) ? H : B;
+      vec3 hNear = (q.x < 0.5) ? D : F;
+      vec3 hFar  = (q.x < 0.5) ? F : D;
+
+      vec3 col = E;
+      // Corner agrees with itself but not with what's opposite it: this is
+      // the inside of a diagonal step, so cut it. Anything else - a flat
+      // region, an isolated pixel, a straight edge - falls through
+      // untouched, which is what keeps detail crisp.
+      if (!differ(vNear, hNear) && differ(vNear, hFar) && differ(hNear, vFar)) {
+        col = mix(E, 0.5 * (vNear + hNear), uStrength);
+      }
+      gl_FragColor = vec4(col, 1.0);
+    }
+  `;
+
   function compileShader(gl, type, source) {
     const shader = gl.createShader(type);
     gl.shaderSource(shader, source);
@@ -209,7 +299,8 @@
     }
     const smoothProgram = buildProgram(gl, GL_FRAGMENT_SMOOTH_SRC);
     const smartProgram = buildProgram(gl, GL_FRAGMENT_SMART_SRC);
-    if (!smoothProgram || !smartProgram) return null;
+    const hq2xProgram = buildProgram(gl, GL_FRAGMENT_HQ2X_SRC);
+    if (!smoothProgram || !smartProgram || !hq2xProgram) return null;
 
     // Attribute/uniform locations never change once a program is linked -
     // looking them up fresh on every single frame (up to 60x/sec) was
@@ -226,6 +317,11 @@
       size: gl.getUniformLocation(smartProgram, "uTextureSize"),
       smoothness: gl.getUniformLocation(smartProgram, "uSmoothness"),
     };
+    const hq2xLocs = {
+      pos: gl.getAttribLocation(hq2xProgram, "aPosition"),
+      size: gl.getUniformLocation(hq2xProgram, "uTextureSize"),
+      strength: gl.getUniformLocation(hq2xProgram, "uStrength"),
+    };
 
     const quadBuffer = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, quadBuffer);
@@ -237,7 +333,8 @@
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
     glState = {
-      gl, smoothProgram, smartProgram, smoothLocs, smartLocs, quadBuffer, texture,
+      gl, smoothProgram, smartProgram, hq2xProgram,
+      smoothLocs, smartLocs, hq2xLocs, quadBuffer, texture,
       lastTexFilterMode: null, // also cached, so texParameteri isn't reset every frame either
     };
     return glState;
@@ -249,16 +346,23 @@
       currentFilter = "off"; // WebGL unavailable - silently fall back
       return false;
     }
-    const { gl, smoothProgram, smartProgram, smoothLocs, smartLocs, quadBuffer, texture } = state;
+    const {
+      gl, smoothProgram, smartProgram, hq2xProgram,
+      smoothLocs, smartLocs, hq2xLocs, quadBuffer, texture,
+    } = state;
     const isSmart = currentFilter === "smart";
-    const program = isSmart ? smartProgram : smoothProgram;
-    const locs = isSmart ? smartLocs : smoothLocs;
+    const isHq2x = currentFilter === "hq2x";
+    const program = isHq2x ? hq2xProgram : (isSmart ? smartProgram : smoothProgram);
+    const locs = isHq2x ? hq2xLocs : (isSmart ? smartLocs : smoothLocs);
 
     gl.viewport(0, 0, canvasGL.width, canvasGL.height);
     gl.useProgram(program);
 
     gl.bindTexture(gl.TEXTURE_2D, texture);
-    const filterMode = isSmart ? gl.NEAREST : gl.LINEAR;
+    // Both custom shaders do their own neighbour sampling and need exact
+    // source pixels; letting the GPU pre-blend them would blunt every
+    // comparison the filter is built on.
+    const filterMode = (isSmart || isHq2x) ? gl.NEAREST : gl.LINEAR;
     if (state.lastTexFilterMode !== filterMode) {
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filterMode);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filterMode);
@@ -273,6 +377,9 @@
     if (isSmart) {
       gl.uniform2f(locs.size, WIDTH, HEIGHT);
       gl.uniform1f(locs.smoothness, smartSmoothness);
+    } else if (isHq2x) {
+      gl.uniform2f(locs.size, WIDTH, HEIGHT);
+      gl.uniform1f(locs.strength, hq2xStrength);
     }
 
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
@@ -287,6 +394,24 @@
       canvas.hidden = true;
       canvasGL.hidden = false;
     }
+
+    // HQ2x is the only filter that produces more pixels than it consumes, so
+    // it's the only one that needs a bigger backing store. The others render
+    // one fragment per source pixel, where extra buffer would be pure fill
+    // cost for an identical image. CSS size is untouched either way - the
+    // element still lays out at the same place, the browser just has a
+    // sharper buffer to scale from.
+    const scale = currentFilter === "hq2x" ? 2 : 1;
+    if (canvasGL.width !== WIDTH * scale) {
+      canvasGL.width = WIDTH * scale;
+      canvasGL.height = HEIGHT * scale;
+    }
+
+    // Only show the knob that applies to the filter actually selected.
+    const smoothnessRow = document.getElementById("smoothnessRow");
+    if (smoothnessRow) smoothnessRow.hidden = currentFilter !== "smart";
+    const hq2xRow = document.getElementById("hq2xRow");
+    if (hq2xRow) hq2xRow.hidden = currentFilter !== "hq2x";
   }
 
   function applyTheme(themeId) {
@@ -325,7 +450,7 @@
   function loadVideoFilter() {
     try {
       const stored = localStorage.getItem(FILTER_KEY);
-      if (stored === "off" || stored === "smooth" || stored === "smart") {
+      if (stored === "off" || stored === "smooth" || stored === "smart" || stored === "hq2x") {
         currentFilter = stored;
       }
     } catch (_) { /* localStorage unavailable - default to "off" */ }
@@ -355,6 +480,30 @@
     const value = document.getElementById("smoothnessValue");
     if (slider) slider.value = smartSmoothness;
     if (value) value.textContent = smartSmoothness.toFixed(1);
+  }
+
+  function loadHq2xStrength() {
+    try {
+      const stored = parseFloat(localStorage.getItem(HQ2X_KEY));
+      if (!isNaN(stored)) hq2xStrength = stored;
+    } catch (_) { /* localStorage unavailable - default stays in place */ }
+    const slider = document.getElementById("hq2xRange");
+    const value = document.getElementById("hq2xValue");
+    if (slider) slider.value = hq2xStrength;
+    if (value) value.textContent = hq2xStrength.toFixed(2);
+  }
+
+  function bindHq2xSlider() {
+    const slider = document.getElementById("hq2xRange");
+    const value = document.getElementById("hq2xValue");
+    if (!slider) return;
+    slider.addEventListener("input", () => {
+      hq2xStrength = parseFloat(slider.value);
+      if (value) value.textContent = hq2xStrength.toFixed(2);
+      try {
+        localStorage.setItem(HQ2X_KEY, String(hq2xStrength));
+      } catch (_) { /* ignore - see loadHq2xStrength */ }
+    });
   }
 
   function bindSmoothnessSlider() {
@@ -2779,6 +2928,8 @@
   bindVideoFilterSelect();
   loadSmoothness();
   bindSmoothnessSlider();
+  loadHq2xStrength();
+  bindHq2xSlider();
   bindChatNameInput();
   bindSettings();
   bindVirtualKeyboard();
