@@ -47,7 +47,7 @@
   const toggleControlsBtn = document.getElementById("toggleControlsBtn");
   const imageData = ctx.createImageData(WIDTH, HEIGHT);
 
-  // --- WebGL video filters (Off / Smooth / Smart smooth / HQ2x) ----------
+  // --- WebGL video filters (Off / Smooth / Smart smooth / HQ2x / HQ4x) ---
   //
   // "Smooth" is a single call to the GPU's own built-in bilinear texture
   // sampling - not really custom logic, just asking for LINEAR instead of
@@ -71,8 +71,8 @@
   let currentFilter = "off";
   const SMOOTHNESS_KEY = "gbserver.smartSmoothness";
   let smartSmoothness = 2.0; // matches the value this used to be hardcoded at
-  const HQ2X_KEY = "gbserver.hq2xStrength";
-  let hq2xStrength = 1.0;    // 1 = full rounding, 0 = identical to Off
+  const HQX_KEY = "gbserver.hqxStrength";
+  let hqxStrength = 1.0;    // 1 = full rounding, 0 = identical to Off
   const THEME_KEY = "gbserver.theme";
   const VALID_THEMES = ["dmg", "pocket", "grape", "light-yellow", "dark", "clearshell"];
   let glState = null; // set up lazily on first non-"off" selection
@@ -175,17 +175,24 @@
     }
   `;
 
-  // HQ2x-style edge-directed doubling.
+  // HQx-style edge-directed upscaling, at 2x or 4x.
   //
   // Every filter above renders one fragment per SOURCE pixel, so none of
   // them can actually change the shape of anything - there is nowhere to
   // put a rounded corner. They soften the image and the browser's own
   // upscale does the rest. This one is different: the GL canvas is switched
-  // to a 320x288 backing store while it's selected (see
-  // applyFilterVisibility), so each source pixel becomes four output
+  // to a 320x288 (HQ2x) or 640x576 (HQ4x) backing store while it's selected
+  // (see applyFilterVisibility), so each source pixel becomes several output
   // pixels and a staircase can genuinely be redrawn as a diagonal. The
   // browser then scales that up smoothly to the displayed size, which is
   // the "and smoothing on top" half.
+  //
+  // ONE shader serves both. It never learns its own output scale - the cut
+  // is expressed as a coverage test in source-pixel coordinates, so a
+  // larger canvas automatically produces a finer staircase. Confirmed
+  // numerically: at 2x this is bit-identical to the whole-quadrant
+  // replacement it replaced, and at 4x it matches applying that 2x filter
+  // twice, without needing a second pass or a framebuffer to do it.
   //
   // ON THE NAME: this is an ORIGINAL implementation in the HQx family, not
   // a port of Maxim Stepin's hq2x. That algorithm works from a 256-entry
@@ -205,7 +212,7 @@
   // returned bit-identical, a 1px checkerboard stays a checkerboard rather
   // than collapsing to grey, and a 45-degree edge goes from 2px blocks to a
   // clean 1px-per-row diagonal.
-  const GL_FRAGMENT_HQ2X_SRC = `
+  const GL_FRAGMENT_HQX_SRC = `
     // highp where it exists. The quadrant test is fract(vTexCoord * 160.0),
     // and mediump only guarantees ~10 bits of mantissa - at a magnitude of
     // 160 that leaves absolute steps coarser than 0.1, which is enough to
@@ -234,9 +241,12 @@
       vec2 texel = 1.0 / uTextureSize;
       vec2 texelPos = vTexCoord * uTextureSize;
       vec2 center = (floor(texelPos) + 0.5) * texel;
+      vec2 f = fract(texelPos);
       // Which of the source pixel's four quadrants this fragment lands in.
-      // At a 2x backing store this is exact: 0.25 or 0.75, never ambiguous.
-      vec2 q = step(0.5, fract(texelPos));
+      vec2 q = step(0.5, f);
+      // How far into that quadrant it sits: 0 at the pixel's centre, 1 at
+      // its outer corner.
+      vec2 edge = abs(f - 0.5) * 2.0;
 
       vec3 E = texture2D(uTexture, center).rgb;
       vec3 B = texture2D(uTexture, center + vec2(0.0, -texel.y)).rgb;
@@ -257,7 +267,14 @@
       // region, an isolated pixel, a straight edge - falls through
       // untouched, which is what keeps detail crisp.
       if (!differ(vNear, hNear) && differ(vNear, hFar) && differ(hNear, vFar)) {
-        col = mix(E, 0.5 * (vNear + hNear), uStrength);
+        // Cut a 45-degree corner rather than the whole quadrant. At 2x the
+        // quadrant IS one fragment, sitting at edge = (0.5, 0.5), so the sum
+        // is always 1.0 and the entire quadrant is cut - exactly the old
+        // behaviour. At 4x the quadrant is 2x2 fragments with sums of 0.5,
+        // 1.0, 1.0 and 1.5, so three of the four are cut and the staircase
+        // gets finer. 0.6 is what makes those two cases line up.
+        float cut = step(0.6, edge.x + edge.y);
+        col = mix(E, 0.5 * (vNear + hNear), uStrength * cut);
       }
       gl_FragColor = vec4(col, 1.0);
     }
@@ -299,8 +316,8 @@
     }
     const smoothProgram = buildProgram(gl, GL_FRAGMENT_SMOOTH_SRC);
     const smartProgram = buildProgram(gl, GL_FRAGMENT_SMART_SRC);
-    const hq2xProgram = buildProgram(gl, GL_FRAGMENT_HQ2X_SRC);
-    if (!smoothProgram || !smartProgram || !hq2xProgram) return null;
+    const hqxProgram = buildProgram(gl, GL_FRAGMENT_HQX_SRC);
+    if (!smoothProgram || !smartProgram || !hqxProgram) return null;
 
     // Attribute/uniform locations never change once a program is linked -
     // looking them up fresh on every single frame (up to 60x/sec) was
@@ -317,10 +334,10 @@
       size: gl.getUniformLocation(smartProgram, "uTextureSize"),
       smoothness: gl.getUniformLocation(smartProgram, "uSmoothness"),
     };
-    const hq2xLocs = {
-      pos: gl.getAttribLocation(hq2xProgram, "aPosition"),
-      size: gl.getUniformLocation(hq2xProgram, "uTextureSize"),
-      strength: gl.getUniformLocation(hq2xProgram, "uStrength"),
+    const hqxLocs = {
+      pos: gl.getAttribLocation(hqxProgram, "aPosition"),
+      size: gl.getUniformLocation(hqxProgram, "uTextureSize"),
+      strength: gl.getUniformLocation(hqxProgram, "uStrength"),
     };
 
     const quadBuffer = gl.createBuffer();
@@ -333,8 +350,8 @@
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
     glState = {
-      gl, smoothProgram, smartProgram, hq2xProgram,
-      smoothLocs, smartLocs, hq2xLocs, quadBuffer, texture,
+      gl, smoothProgram, smartProgram, hqxProgram,
+      smoothLocs, smartLocs, hqxLocs, quadBuffer, texture,
       lastTexFilterMode: null, // also cached, so texParameteri isn't reset every frame either
     };
     return glState;
@@ -347,13 +364,13 @@
       return false;
     }
     const {
-      gl, smoothProgram, smartProgram, hq2xProgram,
-      smoothLocs, smartLocs, hq2xLocs, quadBuffer, texture,
+      gl, smoothProgram, smartProgram, hqxProgram,
+      smoothLocs, smartLocs, hqxLocs, quadBuffer, texture,
     } = state;
     const isSmart = currentFilter === "smart";
-    const isHq2x = currentFilter === "hq2x";
-    const program = isHq2x ? hq2xProgram : (isSmart ? smartProgram : smoothProgram);
-    const locs = isHq2x ? hq2xLocs : (isSmart ? smartLocs : smoothLocs);
+    const isHqx = currentFilter === "hq2x" || currentFilter === "hq4x";
+    const program = isHqx ? hqxProgram : (isSmart ? smartProgram : smoothProgram);
+    const locs = isHqx ? hqxLocs : (isSmart ? smartLocs : smoothLocs);
 
     gl.viewport(0, 0, canvasGL.width, canvasGL.height);
     gl.useProgram(program);
@@ -362,7 +379,7 @@
     // Both custom shaders do their own neighbour sampling and need exact
     // source pixels; letting the GPU pre-blend them would blunt every
     // comparison the filter is built on.
-    const filterMode = (isSmart || isHq2x) ? gl.NEAREST : gl.LINEAR;
+    const filterMode = (isSmart || isHqx) ? gl.NEAREST : gl.LINEAR;
     if (state.lastTexFilterMode !== filterMode) {
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filterMode);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filterMode);
@@ -377,9 +394,9 @@
     if (isSmart) {
       gl.uniform2f(locs.size, WIDTH, HEIGHT);
       gl.uniform1f(locs.smoothness, smartSmoothness);
-    } else if (isHq2x) {
+    } else if (isHqx) {
       gl.uniform2f(locs.size, WIDTH, HEIGHT);
-      gl.uniform1f(locs.strength, hq2xStrength);
+      gl.uniform1f(locs.strength, hqxStrength);
     }
 
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
@@ -395,13 +412,14 @@
       canvasGL.hidden = false;
     }
 
-    // HQ2x is the only filter that produces more pixels than it consumes, so
-    // it's the only one that needs a bigger backing store. The others render
-    // one fragment per source pixel, where extra buffer would be pure fill
-    // cost for an identical image. CSS size is untouched either way - the
-    // element still lays out at the same place, the browser just has a
-    // sharper buffer to scale from.
-    const scale = currentFilter === "hq2x" ? 2 : 1;
+    // The HQx filters are the only ones that produce more pixels than they
+    // consume, so they're the only ones that need a bigger backing store.
+    // The others render one fragment per source pixel, where extra buffer
+    // would be pure fill cost for an identical image. CSS size is untouched
+    // either way - the element still lays out in the same place, the browser
+    // just has a sharper buffer to scale from. 4x is 640x576, which is about
+    // 370k fragments at 60fps; trivial for anything that can run WebGL.
+    const scale = currentFilter === "hq4x" ? 4 : (currentFilter === "hq2x" ? 2 : 1);
     if (canvasGL.width !== WIDTH * scale) {
       canvasGL.width = WIDTH * scale;
       canvasGL.height = HEIGHT * scale;
@@ -410,8 +428,8 @@
     // Only show the knob that applies to the filter actually selected.
     const smoothnessRow = document.getElementById("smoothnessRow");
     if (smoothnessRow) smoothnessRow.hidden = currentFilter !== "smart";
-    const hq2xRow = document.getElementById("hq2xRow");
-    if (hq2xRow) hq2xRow.hidden = currentFilter !== "hq2x";
+    const hqxRow = document.getElementById("hqxRow");
+    if (hqxRow) hqxRow.hidden = currentFilter !== "hq2x" && currentFilter !== "hq4x";
   }
 
   function applyTheme(themeId) {
@@ -450,7 +468,8 @@
   function loadVideoFilter() {
     try {
       const stored = localStorage.getItem(FILTER_KEY);
-      if (stored === "off" || stored === "smooth" || stored === "smart" || stored === "hq2x") {
+      if (stored === "off" || stored === "smooth" || stored === "smart"
+          || stored === "hq2x" || stored === "hq4x") {
         currentFilter = stored;
       }
     } catch (_) { /* localStorage unavailable - default to "off" */ }
@@ -482,27 +501,27 @@
     if (value) value.textContent = smartSmoothness.toFixed(1);
   }
 
-  function loadHq2xStrength() {
+  function loadHqxStrength() {
     try {
-      const stored = parseFloat(localStorage.getItem(HQ2X_KEY));
-      if (!isNaN(stored)) hq2xStrength = stored;
+      const stored = parseFloat(localStorage.getItem(HQX_KEY));
+      if (!isNaN(stored)) hqxStrength = stored;
     } catch (_) { /* localStorage unavailable - default stays in place */ }
-    const slider = document.getElementById("hq2xRange");
-    const value = document.getElementById("hq2xValue");
-    if (slider) slider.value = hq2xStrength;
-    if (value) value.textContent = hq2xStrength.toFixed(2);
+    const slider = document.getElementById("hqxRange");
+    const value = document.getElementById("hqxValue");
+    if (slider) slider.value = hqxStrength;
+    if (value) value.textContent = hqxStrength.toFixed(2);
   }
 
-  function bindHq2xSlider() {
-    const slider = document.getElementById("hq2xRange");
-    const value = document.getElementById("hq2xValue");
+  function bindHqxSlider() {
+    const slider = document.getElementById("hqxRange");
+    const value = document.getElementById("hqxValue");
     if (!slider) return;
     slider.addEventListener("input", () => {
-      hq2xStrength = parseFloat(slider.value);
-      if (value) value.textContent = hq2xStrength.toFixed(2);
+      hqxStrength = parseFloat(slider.value);
+      if (value) value.textContent = hqxStrength.toFixed(2);
       try {
-        localStorage.setItem(HQ2X_KEY, String(hq2xStrength));
-      } catch (_) { /* ignore - see loadHq2xStrength */ }
+        localStorage.setItem(HQX_KEY, String(hqxStrength));
+      } catch (_) { /* ignore - see loadHqxStrength */ }
     });
   }
 
@@ -2928,8 +2947,8 @@
   bindVideoFilterSelect();
   loadSmoothness();
   bindSmoothnessSlider();
-  loadHq2xStrength();
-  bindHq2xSlider();
+  loadHqxStrength();
+  bindHqxSlider();
   bindChatNameInput();
   bindSettings();
   bindVirtualKeyboard();

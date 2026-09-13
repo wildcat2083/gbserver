@@ -233,8 +233,9 @@
           <option value="smooth">Smooth (bilinear)</option>
           <option value="smart">Smart smooth (edge-aware)</option>
           <option value="hq2x">HQ2x (redraws edges, then smooths)</option>
+          <option value="hq4x">HQ4x (same, at quadruple resolution)</option>
         </select>
-        <p class="setting-help">Smooth and Smart smooth soften the picture but can't change its shape. HQ2x renders at double resolution first, so a jagged diagonal is actually redrawn as a diagonal rather than just blurred - then scaled up smoothly on top.</p>
+        <p class="setting-help">Smooth and Smart smooth soften the picture but can't change its shape. The HQx filters render at higher resolution first, so a jagged diagonal is actually redrawn as a diagonal rather than just blurred - then scaled up smoothly on top. HQ4x carves each corner into a finer staircase than HQ2x; it costs a little more GPU time and is the better pick on a large screen.</p>
       </div>
       <div class="setting-row" id="smoothnessRow" hidden>
         <div class="setting-row-top">
@@ -244,13 +245,13 @@
         <input id="smoothnessRange" type="range" min="0" max="10" step="0.1" value="2.0" />
         <p class="setting-help">Higher softens diagonal edges more aggressively; 0 disables the directional smoothing entirely.</p>
       </div>
-      <div class="setting-row" id="hq2xRow" hidden>
+      <div class="setting-row" id="hqxRow" hidden>
         <div class="setting-row-top">
-          <span>HQ2x strength</span>
-          <strong id="hq2xValue">1.00</strong>
+          <span>HQx strength</span>
+          <strong id="hqxValue">1.00</strong>
         </div>
-        <input id="hq2xRange" type="range" min="0" max="1" step="0.05" value="1.00" />
-        <p class="setting-help">How far a detected staircase corner gets cut. 1 rounds it fully; lower values ease off toward the original pixel shape, and 0 leaves the image untouched.</p>
+        <input id="hqxRange" type="range" min="0" max="1" step="0.05" value="1.00" />
+        <p class="setting-help">Applies to both HQ2x and HQ4x - how far a detected staircase corner gets cut. 1 rounds it fully; lower values ease off toward the original pixel shape, and 0 leaves the image untouched.</p>
       </div>
     </section>
 
