@@ -1077,6 +1077,7 @@
 
   let gamepadIndex = null;
   let previousStatusText = "";
+  let gamepadMissingFrames = 0;
   const gamepadHeld = new Set();
   let ffGamepadWasPressed = false;
   let resetGamepadWasPressed = false;
@@ -1447,16 +1448,20 @@
   }
 
 
-  function handleGamepadConnected(e) {
-    gamepadIndex = e.gamepad.index;
+  function adoptGamepad(pad) {
+    gamepadIndex = pad.index;
     previousStatusText = statusEl.textContent;
-    const rawId = e.gamepad.id || "";
-    statusEl.title = rawId;
-    setStatus(`Linked \u00b7 ${resolveControllerName(rawId)}`, true);
+    statusEl.title = pad.id || "";
+    setStatus(`Linked \u00b7 ${resolveControllerName(pad.id || "")}`, true);
     startAudioAndHideHint();
   }
 
+  function handleGamepadConnected(e) {
+    adoptGamepad(e.gamepad);
+  }
+
   function dropActiveGamepad() {
+    gamepadMissingFrames = 0;
     gamepadIndex = null;
     for (const name of gamepadHeld) sendInput("release", name);
     gamepadHeld.clear();
@@ -1483,13 +1488,14 @@
   }
 
   function pollGamepad() {
+    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
     if (gamepadIndex !== null) {
-      const pads = navigator.getGamepads ? navigator.getGamepads() : [];
       const pad = pads[gamepadIndex];
 
-      if (!pad || pad.connected === false) { dropActiveGamepad(); return; }
-
-      if (pad) {
+      if (!pad || pad.connected === false) {
+        if (++gamepadMissingFrames >= 3) dropActiveGamepad();
+      } else {
+        gamepadMissingFrames = 0;
         const settingsBtnState = pad.buttons[SETTINGS_GAMEPAD_BUTTON];
         const settingsIsDown = !!settingsBtnState && settingsBtnState.pressed;
         if (settingsIsDown && !settingsGamepadWasPressed) setSettingsOpen(!settingsOpen);
@@ -1587,6 +1593,14 @@
         const resetIsDown = !!resetBtn && resetBtn.pressed;
         if (resetIsDown && !resetGamepadWasPressed) triggerReset();
         resetGamepadWasPressed = resetIsDown;
+      }
+    } else {
+      for (let i = 0; i < pads.length; i++) {
+        const p = pads[i];
+        if (p && p.connected) {
+          adoptGamepad(p);
+          break;
+        }
       }
     }
     requestAnimationFrame(pollGamepad);
