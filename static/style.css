@@ -137,6 +137,17 @@ body.theme-clearshell .settings-panel {
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85);
 }
 
+body.theme-clearshell #helpPanel,
+body.theme-clearshell #chatPanel {
+  background-image:
+    linear-gradient(180deg, rgba(95, 95, 100, 0.32) 0%, rgba(62, 62, 68, 0.4) 100%),
+    linear-gradient(rgba(0, 0, 0, 0.3), rgba(0, 0, 0, 0.3)),
+    url("/static/img/circuit-board.jpg");
+  background-size: auto, auto, cover;
+  background-position: 0 0, 0 0, center;
+  background-repeat: no-repeat, no-repeat, no-repeat;
+}
+
 body.theme-clearshell .shell {
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85);
 }
