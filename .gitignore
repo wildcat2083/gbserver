@@ -1,0 +1,13 @@
+roms/
+saves/
+dist/
+build/
+windows/Output/
+__pycache__/
+*.pyc
+*.pyo
+*.zip
+*.tar.gz
+.env
+*.log
+blocked_ips.json

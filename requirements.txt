@@ -1,5 +1,4 @@
 pyboy
-pillow
 flask
 flask-limiter
 flask-sock

@@ -1,4 +1,5 @@
 import os
+import sys
 import threading
 from pathlib import Path
 
@@ -36,7 +37,11 @@ FAST_FORWARD_SPEED = 4
 CHAT_RATE_WINDOW_SECONDS = 10
 CHAT_RATE_MAX_MESSAGES = 8
 
-BASE_DIR = Path(__file__).parent
+BASE_DIR = (
+    Path(sys.executable).resolve().parent
+    if getattr(sys, "frozen", False)
+    else Path(__file__).resolve().parent
+)
 ROMS_DIR = BASE_DIR / "roms"
 SAVES_DIR = BASE_DIR / "saves"
 ROOM_SAVES_DIR = BASE_DIR / "saves" / "rooms"

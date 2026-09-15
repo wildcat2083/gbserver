@@ -13,8 +13,10 @@ MSG_AUDIO = b"\x02"
 
 def run_worker(cmd_queue, out_queue, roms_dir, saves_dir, sound_sample_rate,
                 sound_volume, audio_batch_ticks, autosave_interval_minutes, fast_forward_speed):
-    for s in (signal.SIGTERM, signal.SIGINT, signal.SIGQUIT):
-        signal.signal(s, signal.SIG_DFL)
+    for name in ("SIGTERM", "SIGINT", "SIGQUIT"):
+        sig = getattr(signal, name, None)
+        if sig is not None:
+            signal.signal(sig, signal.SIG_DFL)
 
     from pyboy import PyBoy
     try:
