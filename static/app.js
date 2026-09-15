@@ -39,7 +39,7 @@
   const HQX_KEY = "gbserver.hqxStrength";
   let hqxStrength = 1.0;
   const THEME_KEY = "gbserver.theme";
-  const VALID_THEMES = ["dmg", "pocket", "grape", "light-yellow", "dark", "clearshell"];
+  const VALID_THEMES = ["dmg", "pocket", "grape", "light-yellow", "dark", "clearshell", "pokemon"];
   let glState = null;
 
   const GL_VERTEX_SRC = `
