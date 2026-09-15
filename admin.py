@@ -10,11 +10,24 @@ from pathlib import Path
 from flask import jsonify, render_template, request
 
 from app import app, limiter
-from config import BASE_DIR, MAX_ROOMS, OFFLINE_CLOSE_CODE, OFFLINE_FLAG_PATH, ROMS_DIR
+from config import BASE_DIR, MAX_ROOMS, OFFLINE_CLOSE_CODE, OFFLINE_FLAG_PATH, safe_rom_name, safe_rom_path
 from engine_config import BOYTACEAN_AVAILABLE
 from rooms import default_emu, get_emulator, rooms, rooms_lock, create_room, shared_game_state
 
-ADMIN_TOKEN = os.environ.get("GBSERVER_ADMIN_TOKEN")
+_INSECURE_ADMIN_TOKENS = {"", "changeme", "change-me", "changeme123", "admin", "password"}
+MIN_ADMIN_TOKEN_LENGTH = 32
+
+ADMIN_TOKEN = os.environ.get("GBSERVER_ADMIN_TOKEN", "").strip()
+if ADMIN_TOKEN.lower() in _INSECURE_ADMIN_TOKENS or len(ADMIN_TOKEN) < MIN_ADMIN_TOKEN_LENGTH:
+    if ADMIN_TOKEN:
+        print(
+            "[warn] GBSERVER_ADMIN_TOKEN is a placeholder or shorter than "
+            f"{MIN_ADMIN_TOKEN_LENGTH} characters - admin API disabled. "
+            "Generate one with: openssl rand -hex 32"
+        )
+    else:
+        print("[warn] GBSERVER_ADMIN_TOKEN is not set - admin API disabled.")
+    ADMIN_TOKEN = None
 
 
 CERT_PATHS = {
@@ -343,7 +356,11 @@ def api_admin_unblock_ip():
 def api_admin_delete_rom(filename):
     if not _is_admin_request():
         return jsonify({"error": "not authorized"}), 403
-    rom_path = ROMS_DIR / filename
+    try:
+        filename = safe_rom_name(filename)
+        rom_path = safe_rom_path(filename)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
     if not rom_path.exists():
         return jsonify({"error": "no such ROM"}), 404
 

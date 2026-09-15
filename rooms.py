@@ -1,4 +1,4 @@
-import random
+import secrets
 import shutil
 import threading
 import time
@@ -28,9 +28,9 @@ def create_room():
     with rooms_lock:
         if len(rooms) >= MAX_ROOMS:
             return None
-        code = "".join(random.choices(ROOM_CODE_ALPHABET, k=ROOM_CODE_LENGTH))
+        code = "".join(secrets.choice(ROOM_CODE_ALPHABET) for _ in range(ROOM_CODE_LENGTH))
         while code in rooms:
-            code = "".join(random.choices(ROOM_CODE_ALPHABET, k=ROOM_CODE_LENGTH))
+            code = "".join(secrets.choice(ROOM_CODE_ALPHABET) for _ in range(ROOM_CODE_LENGTH))
         rooms[code] = Emulator(ROOM_SAVES_DIR / code)
         return code
 

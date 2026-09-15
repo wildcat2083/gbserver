@@ -1,3 +1,4 @@
+from pathlib import Path
 import math
 import signal
 import queue
@@ -97,6 +98,12 @@ def run_worker(cmd_queue, out_queue, roms_dir, saves_dir, sound_sample_rate,
 
         active_cheats = []
 
+        if (
+            not isinstance(filename, str)
+            or Path(filename).name != filename
+            or filename in ("", ".", "..")
+        ):
+            raise FileNotFoundError(filename)
         candidate = roms_dir / filename
 
         is_same_rom = rom_path is not None and rom_path == candidate

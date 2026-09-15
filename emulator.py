@@ -21,6 +21,7 @@ from config import (
     ROMS_DIR,
     SOUND_SAMPLE_RATE,
     SOUND_VOLUME,
+    safe_rom_name,
 )
 from engine_config import get_engine_for_rom
 from emu_worker import run_worker
@@ -239,6 +240,7 @@ class Emulator:
         return self.saves_dir / (rom_path.stem + ".state")
 
     def delete_rom(self, filename):
+        filename = safe_rom_name(filename)
         if self._current_rom_name == filename:
             self.stop()
         rom_path = ROMS_DIR / filename
@@ -249,6 +251,10 @@ class Emulator:
             save_path.unlink()
 
     def load_rom(self, filename, load_save=True):
+        try:
+            filename = safe_rom_name(filename)
+        except ValueError:
+            raise FileNotFoundError(filename)
         if not (ROMS_DIR / filename).exists():
             raise FileNotFoundError(filename)
         ack = self._send_and_wait({
@@ -296,7 +302,9 @@ class Emulator:
         rom_name = self._current_rom_name
 
         if rom_name is None:
-            stem = Path(file_storage.filename).stem
+            stem = Path(Path(file_storage.filename or "").name).stem
+            if not stem or stem in (".", ".."):
+                raise ValueError("invalid save filename")
             candidate_gb = ROMS_DIR / f"{stem}.gb"
             candidate_gbc = ROMS_DIR / f"{stem}.gbc"
             if candidate_gb.exists():
@@ -320,7 +328,9 @@ class Emulator:
         rom_name = self._current_rom_name
 
         if rom_name is None:
-            stem = Path(file_storage.filename).stem
+            stem = Path(Path(file_storage.filename or "").name).stem
+            if not stem or stem in (".", ".."):
+                raise ValueError("invalid save filename")
             candidate_gb = ROMS_DIR / f"{stem}.gb"
             candidate_gbc = ROMS_DIR / f"{stem}.gbc"
             if candidate_gb.exists():

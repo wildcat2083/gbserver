@@ -2,7 +2,7 @@
 #
 # Runs the headless Game Boy server via gunicorn, listening on
 # 127.0.0.1:8080 (nginx handles the public-facing side — see
-# deploy/nginx/gbserver.conf).
+# deploy/nginx/deploy_gbserver.conf).
 #
 # Install:
 #   sudo cp deploy/systemd/gbserver.service /etc/systemd/system/
@@ -28,8 +28,13 @@ RestartSec=3
 # but some environments still expect these to be set harmlessly.
 Environment=SDL_VIDEODRIVER=dummy
 Environment=SDL_AUDIODRIVER=dummy
-Environment=GBSERVER_ADMIN_TOKEN=changeme
 Environment=GBSERVER_MAX_ROOMS=20
+
+# Secrets live outside the repo. Create it from the example:
+#   sudo install -m 600 -o root -g root deploy/systemd/gbserver.env.example /etc/gbserver.env
+#   sudo nano /etc/gbserver.env        # paste in: openssl rand -hex 32
+# The app refuses placeholder or short tokens and disables the admin API.
+EnvironmentFile=/etc/gbserver.env
 
 [Install]
 WantedBy=multi-user.target

@@ -1,5 +1,4 @@
 import json
-import random
 import io
 from pathlib import Path
 
@@ -17,6 +16,8 @@ from config import (
     ROMS_DIR,
     SHARED_DISABLED_CLOSE_CODE,
     SOUND_SAMPLE_RATE,
+    safe_rom_name,
+    safe_rom_path,
 )
 from emulator import Emulator
 from engine_config import BOYTACEAN_AVAILABLE, get_engine_for_rom, set_engine_for_rom
@@ -126,13 +127,23 @@ def api_fast_forward(room_code=None):
 def api_upload(room_code=None):
     get_emulator_or_404(room_code)
     f = request.files.get("rom")
-    if f is None or f.filename == "":
+    if f is None or not f.filename:
         return jsonify({"error": "no file"}), 400
-    if not (f.filename.lower().endswith(".gb") or f.filename.lower().endswith(".gbc")):
-        return jsonify({"error": "only .gb / .gbc files are supported"}), 400
-    dest = ROMS_DIR / f.filename
-    f.save(dest)
-    return jsonify({"ok": True, "filename": f.filename})
+    try:
+        filename = safe_rom_name(f.filename)
+        dest = safe_rom_path(filename)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    if dest.exists():
+        return jsonify({"error": f'A ROM named "{filename}" already exists - delete it first to replace it'}), 409
+    tmp = dest.with_name(dest.name + ".uploading")
+    try:
+        f.save(tmp)
+        tmp.replace(dest)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
+    return jsonify({"ok": True, "filename": filename})
 
 
 @app.route("/api/play", methods=["POST"])
@@ -147,6 +158,10 @@ def api_play(room_code=None):
     filename = data.get("filename")
     if not filename:
         return jsonify({"error": "filename required"}), 400
+    try:
+        filename = safe_rom_name(filename)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
 
     load_save = bool(data.get("load_save", False))
     try:
@@ -231,8 +246,11 @@ def api_cheats(room_code=None):
 @app.route("/r/<room_code>/api/rom/<path:filename>/engine", methods=["GET", "POST"])
 @limiter.limit("30 per minute")
 def api_rom_engine(filename, room_code=None):
-
     emu = get_emulator_or_404(room_code)
+    try:
+        filename = safe_rom_name(filename)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
     if request.method == "POST":
         denied = controller_check(emu)
         if denied:
@@ -258,6 +276,12 @@ def api_delete_rom(filename, room_code=None):
     denied = controller_check(emu)
     if denied:
         return denied
+    try:
+        filename = safe_rom_name(filename)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    if not safe_rom_path(filename).exists():
+        return jsonify({"error": "no such ROM"}), 404
     try:
         emu.delete_rom(filename)
     except Exception as e:

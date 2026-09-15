@@ -1,0 +1,15 @@
+# /etc/sudoers.d/gbserver-certcheck
+#
+# Lets the dashboard's certificate-expiry panel read the two certs it
+# monitors - and nothing else. admin.py runs exactly these commands via
+# `sudo -n openssl x509 -enddate -noout -in <path>`.
+#
+# Install (visudo validates syntax before it's live):
+#   sudo visudo -cf deploy/sudoers/gbserver-certcheck
+#   sudo install -m 440 -o root -g root deploy/sudoers/gbserver-certcheck /etc/sudoers.d/gbserver-certcheck
+#
+# If you previously granted a broader openssl rule (e.g. "luna ALL=(root)
+# NOPASSWD: /usr/bin/openssl"), remove it - that one can read any file
+# on the system.
+luna ALL=(root) NOPASSWD: /usr/bin/openssl x509 -enddate -noout -in /etc/letsencrypt/live/gbserver.wulfpax-labs.com/cert.pem
+luna ALL=(root) NOPASSWD: /usr/bin/openssl x509 -enddate -noout -in /etc/nginx/certs/gbserver.crt

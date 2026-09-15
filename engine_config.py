@@ -1,6 +1,6 @@
 import json
 
-from config import ENGINE_OVERRIDES_PATH, _engine_overrides_lock
+from config import ENGINE_OVERRIDES_PATH, ROMS_DIR, _engine_overrides_lock, safe_rom_name
 
 
 try:
@@ -31,6 +31,9 @@ def get_engine_for_rom(filename):
 
 
 def set_engine_for_rom(filename, engine):
+    filename = safe_rom_name(filename)
+    if not (ROMS_DIR / filename).exists():
+        raise ValueError("no such ROM")
     if engine not in ("pyboy", "boytacean"):
         raise ValueError(f'Unknown engine "{engine}" - must be "pyboy" or "boytacean"')
     if engine == "boytacean" and not BOYTACEAN_AVAILABLE:

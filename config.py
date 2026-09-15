@@ -66,3 +66,38 @@ IDLE_CONTROLLER_TIMEOUT_SECONDS = 2 * 60
 
 
 NO_INPUT_TIMEOUT_SECONDS = 30
+
+
+ROM_EXTENSIONS = (".gb", ".gbc")
+
+
+MAX_UPLOAD_BYTES = 8 * 1024 * 1024
+
+
+def safe_rom_name(filename):
+    """Validate a client-supplied ROM filename and return it unchanged.
+
+    Rejects anything that isn't a plain basename ending in .gb/.gbc - no
+    directory separators, no "..", no absolute paths - so it can never
+    escape ROMS_DIR when joined onto it. Raises ValueError otherwise.
+    """
+    if not isinstance(filename, str) or not filename or "\x00" in filename:
+        raise ValueError("invalid ROM filename")
+    if "/" in filename or "\\" in filename:
+        raise ValueError("invalid ROM filename")
+    name = Path(filename).name
+    if name != filename or name in (".", ".."):
+        raise ValueError("invalid ROM filename")
+    if Path(name).suffix.lower() not in ROM_EXTENSIONS:
+        raise ValueError("only .gb / .gbc files are supported")
+    return name
+
+
+def safe_rom_path(filename):
+    """safe_rom_name() plus a resolved-path containment check."""
+    name = safe_rom_name(filename)
+    roms_root = ROMS_DIR.resolve()
+    path = (roms_root / name).resolve()
+    if path.parent != roms_root:
+        raise ValueError("invalid ROM filename")
+    return path
