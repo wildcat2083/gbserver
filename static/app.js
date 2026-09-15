@@ -5,6 +5,14 @@
   const MSG_VIDEO = 1;
   const MSG_AUDIO = 2;
 
+  const ASSET_VERSION = (() => {
+    try {
+      return new URL(document.currentScript.src).searchParams.get("v") || String(Date.now());
+    } catch (_) {
+      return String(Date.now());
+    }
+  })();
+
   const ROOM = document.body.dataset.room || null;
   const ROOM_MISSING = document.body.dataset.roomMissing === "true";
   const SHARED_DISABLED_AT_LOAD = document.body.dataset.sharedDisabled === "true";
@@ -774,6 +782,7 @@
     };
     ws.onclose = (event) => {
       wsReady = false;
+      failDebugRequests();
       if (event.code === KICK_CLOSE_CODE) {
         setStatus("Disconnected by an admin", false);
         return;
@@ -789,7 +798,11 @@
 
     ws.onmessage = async (event) => {
       if (typeof event.data === "string") {
-        if (event.data.startsWith("controller:")) {
+        if (event.data.startsWith("dbgres:")) {
+          handleDebugResponse(event.data.slice("dbgres:".length));
+        } else if (event.data.startsWith("dbgevt:")) {
+          handleDebugEvent(event.data.slice("dbgevt:".length));
+        } else if (event.data.startsWith("controller:")) {
           isController = event.data === "controller:1";
           updateControllerUI();
         } else if (event.data.startsWith("viewers:")) {
@@ -963,6 +976,7 @@
       hapticTap();
       sendInput("press", btn.dataset.btn);
       feedKonamiBuffer(btn.dataset.btn);
+      feedDebugSequence(btn.dataset.btn);
     }
 
     function releaseButton(btn) {
@@ -1479,6 +1493,7 @@
     gamepadHeld.add(name);
     hapticTap();
     sendInput("press", name);
+    feedDebugSequence(name);
   }
 
   function releaseLogical(name) {
@@ -1943,6 +1958,155 @@
     if (!cheatPanel) return;
     window.addEventListener("keydown", (e) => {
       feedKonamiBuffer(KEY_MAP[e.code]);
+    });
+  }
+
+  // ---- hidden debugger --------------------------------------------------------
+  // Start, Select, Start, Select, A, B, A, B - keyboard, touch or gamepad.
+  // The debugger's code and styles are only downloaded once this is entered.
+  const DEBUG_SEQUENCE = ["start", "select", "start", "select", "a", "b", "a", "b"];
+  const DEBUG_SEQUENCE_WINDOW_MS = 5000;
+  let debugBuffer = [];
+  let debugLoader = null;
+  let debugReqId = 0;
+  const debugPending = new Map();
+  const debugListeners = new Set();
+  let debugPausedStatus = false;
+
+  function feedDebugSequence(btn) {
+    if (!btn) return;
+    const now = Date.now();
+    debugBuffer.push({ btn, at: now });
+    debugBuffer = debugBuffer.filter((e) => now - e.at <= DEBUG_SEQUENCE_WINDOW_MS).slice(-DEBUG_SEQUENCE.length);
+    if (
+      debugBuffer.length === DEBUG_SEQUENCE.length &&
+      debugBuffer.every((e, i) => e.btn === DEBUG_SEQUENCE[i])
+    ) {
+      debugBuffer = [];
+      openDebugger(true);
+    }
+  }
+
+  const debugBridge = {
+    request(req) {
+      return new Promise((resolve, reject) => {
+        if (!wsReady || !ws) {
+          reject(new Error("Not connected"));
+          return;
+        }
+        const id = ++debugReqId;
+        const timer = setTimeout(() => {
+          debugPending.delete(id);
+          reject(new Error("No response from server"));
+        }, 12000);
+        debugPending.set(id, { resolve, reject, timer });
+        try {
+          ws.send(`dbg:${JSON.stringify({ ...req, id })}`);
+        } catch (err) {
+          clearTimeout(timer);
+          debugPending.delete(id);
+          reject(err);
+        }
+      });
+    },
+    onEvent(fn) {
+      debugListeners.add(fn);
+    },
+  };
+
+  function handleDebugResponse(text) {
+    let res;
+    try {
+      res = JSON.parse(text);
+    } catch (_) {
+      return;
+    }
+    const pending = debugPending.get(res.id);
+    if (!pending) return;
+    debugPending.delete(res.id);
+    clearTimeout(pending.timer);
+    pending.resolve(res);
+  }
+
+  function failDebugRequests() {
+    for (const [id, pending] of debugPending) {
+      clearTimeout(pending.timer);
+      pending.reject(new Error("Connection lost"));
+      debugPending.delete(id);
+    }
+  }
+
+  function handleDebugEvent(text) {
+    let evt;
+    try {
+      evt = JSON.parse(text);
+    } catch (_) {
+      return;
+    }
+    const paused = !!(evt.state && evt.state.paused);
+    if (paused !== debugPausedStatus) {
+      debugPausedStatus = paused;
+      if (wsReady) setStatus(paused ? "Paused by debugger" : "Linked", !paused);
+    }
+    debugListeners.forEach((fn) => {
+      try {
+        fn(evt);
+      } catch (err) {
+        console.error(err);
+      }
+    });
+  }
+
+  function loadDebuggerAssets() {
+    if (debugLoader) return debugLoader;
+    debugLoader = new Promise((resolve, reject) => {
+      const css = document.createElement("link");
+      css.rel = "stylesheet";
+      css.href = `/static/debugger.css?v=${encodeURIComponent(ASSET_VERSION)}`;
+      document.head.appendChild(css);
+      const script = document.createElement("script");
+      script.src = `/static/debugger.js?v=${encodeURIComponent(ASSET_VERSION)}`;
+      script.onload = () => (window.__gbserverDebugger ? resolve(window.__gbserverDebugger) : reject(new Error("debugger failed to initialise")));
+      script.onerror = () => reject(new Error("debugger failed to load"));
+      document.body.appendChild(script);
+    }).catch((err) => {
+      debugLoader = null;
+      throw err;
+    });
+    return debugLoader;
+  }
+
+  async function openDebugger(withFanfare) {
+    try {
+      const dbg = await loadDebuggerAssets();
+      if (settingsOpen) setSettingsOpen(false);
+      if (chatOpen) setChatOpen(false);
+      if (helpOpen) setHelpOpen(false);
+      if (cheatPanelOpen) setCheatPanelOpen(false);
+      heldKeys.forEach((code) => {
+        const btn = KEY_MAP[code];
+        if (btn) sendInput("release", btn);
+      });
+      heldKeys.clear();
+      if (withFanfare) {
+        const banner = document.createElement("div");
+        banner.className = "gbd-unlock";
+        banner.textContent = "DEBUG MODE";
+        document.body.appendChild(banner);
+        setTimeout(() => banner.remove(), 1700);
+      }
+      dbg.open(debugBridge);
+    } catch (err) {
+      console.error(err);
+    }
+  }
+
+  function bindDebugSequence() {
+    window.addEventListener("keydown", (e) => {
+      if (e.repeat) return;
+      const tag = document.activeElement && document.activeElement.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      feedDebugSequence(KEY_MAP[e.code]);
     });
   }
 
@@ -2686,6 +2850,7 @@
   bindHelpPanel();
   bindChatForm();
   bindCheatPanel();
+  bindDebugSequence();
   startLibraryPolling();
   refreshLibrary();
 })();

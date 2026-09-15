@@ -174,6 +174,17 @@ token. It shows sessions and connected clients, and can kick or move
 clients, block IPs, toggle the shared game, take the server offline,
 manage the ROM library, and show certificate expiry.
 
+### Hidden debugger
+
+There's a BGB-style debugger tucked away as an easter egg: memory viewer and
+editor, memory search, execution breakpoints, value watches, freezes, and
+CPU registers. See `docs/DEBUGGER.md` for how to open and use it.
+
+Anyone connected can look; only the current controller can change memory,
+set breakpoints, or pause. Everything resets when control changes hands.
+Set `GBSERVER_DEBUGGER=internal` in `/etc/gbserver.env` to limit it to the
+LAN hostname, or `off` to disable it.
+
 ## Notes
 
 - Runs on anything with Python 3.

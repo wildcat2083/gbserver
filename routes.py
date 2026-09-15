@@ -16,6 +16,7 @@ from config import (
     ROMS_DIR,
     SHARED_DISABLED_CLOSE_CODE,
     SOUND_SAMPLE_RATE,
+    debugger_allowed_for_host,
     safe_rom_name,
     safe_rom_path,
 )
@@ -405,6 +406,7 @@ def ws_handler(ws, room_code=None):
             pass
         return
     client_id = request.args.get("client_id", "")
+    debugger_allowed = debugger_allowed_for_host(request.host)
     emu.add_client(ws, client_id, remote_addr=request.remote_addr)
     try:
         while True:
@@ -434,6 +436,16 @@ def ws_handler(ws, room_code=None):
                     emu.request_control(ws)
                 elif action == "grantcontrol":
                     emu.grant_control(ws)
+                elif action == "dbg":
+                    if debugger_allowed:
+                        response = emu.debug_request(ws, value)
+                    else:
+                        response = {"id": None, "ok": False, "error": "disabled"}
+                        try:
+                            response["id"] = json.loads(value).get("id")
+                        except Exception:
+                            pass
+                    emu._send(ws, "dbgres:" + json.dumps(response))
     finally:
         emu.remove_client(ws)
 

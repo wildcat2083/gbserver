@@ -101,3 +101,33 @@ def safe_rom_path(filename):
     if path.parent != roms_root:
         raise ValueError("invalid ROM filename")
     return path
+
+
+# Hidden debugger (memory viewer/editor, breakpoints, search).
+#   on       - available on every hostname (writes still controller-only)
+#   internal - only when reached via one of GBSERVER_INTERNAL_HOSTS
+#   off      - disabled entirely
+DEBUGGER_MODE = os.environ.get("GBSERVER_DEBUGGER", "on").strip().lower()
+if DEBUGGER_MODE not in ("on", "internal", "off"):
+    DEBUGGER_MODE = "on"
+INTERNAL_HOSTS = {
+    h.strip().lower()
+    for h in os.environ.get(
+        "GBSERVER_INTERNAL_HOSTS",
+        "gbserver-internal.wulfpax-labs.com,localhost,127.0.0.1",
+    ).split(",")
+    if h.strip()
+}
+
+
+def debugger_allowed_for_host(host):
+    if DEBUGGER_MODE == "off":
+        return False
+    if DEBUGGER_MODE == "on":
+        return True
+    host = (host or "").lower()
+    if host.startswith("["):
+        host = host.split("]", 1)[0] + "]"
+    else:
+        host = host.rsplit(":", 1)[0] if host.count(":") == 1 else host
+    return host in INTERNAL_HOSTS
