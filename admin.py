@@ -10,7 +10,7 @@ from pathlib import Path
 from flask import jsonify, render_template, request
 
 from app import app, limiter
-from config import BASE_DIR, MAX_ROOMS, OFFLINE_CLOSE_CODE, OFFLINE_FLAG_PATH, safe_rom_name, safe_rom_path
+from config import DATA_DIR, MAX_ROOMS, OFFLINE_CLOSE_CODE, OFFLINE_FLAG_PATH, safe_rom_name, safe_rom_path
 from engine_config import BOYTACEAN_AVAILABLE
 from rooms import default_emu, get_emulator, rooms, rooms_lock, create_room, shared_game_state
 
@@ -101,7 +101,7 @@ def _log_action(action, detail=""):
     action_log.appendleft({"ts": time.time(), "action": action, "detail": detail})
 
 
-BLOCKED_IPS_PATH = BASE_DIR / "blocked_ips.json"
+BLOCKED_IPS_PATH = DATA_DIR / "blocked_ips.json"
 
 
 def _load_blocked_ips():

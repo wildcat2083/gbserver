@@ -1,26 +1,23 @@
-; gbserver Windows installer (Inno Setup 6)
+; gbserver auto-updating Windows installer (Inno Setup 6)
 ;
-; Packages the finished one-folder build from:
-;     windows\build_exe.cmd
-;   which produces  dist\gbserver\  (gbserver.exe + _internal\ + roms\ + saves\)
-; into a single installer:  windows\Output\gbserver-setup.exe
+; Build with:  windows\build_installer.cmd
 ;
-; Compile with Inno Setup 6 (https://jrsoftware.org/isdl.php):
-;   - open this file in Inno Setup and press Compile, or
-;   - run:  windows\build_installer.cmd
-;
-; Installs per-user (no administrator needed) under
-; %LOCALAPPDATA%\Programs\gbserver, adds Start Menu and Desktop
-; shortcuts, and registers a normal uninstaller.
+; Installs the runtime (gbserver.exe + _internal\) and an offline snapshot of
+; the code to %LOCALAPPDATA%\Programs\gbserver. On launch, gbserver.exe keeps
+; the code up to date from GitHub. ROMs and saves live in
+; %LOCALAPPDATA%\gbserver\data and are never removed by updates, reinstalls
+; or uninstalling.
 
 #define MyAppName "gbserver"
-#define MyAppVersion "1.0"
+#ifndef RuntimeVersion
+  #define RuntimeVersion "1"
+#endif
 #define MyAppExeName "gbserver.exe"
 
 [Setup]
 AppId={{4E4C8A2A-9B7F-4B2E-8D14-6F1C3A5E20D1}
 AppName={#MyAppName}
-AppVersion={#MyAppVersion}
+AppVersion=runtime {#RuntimeVersion}
 AppPublisher=wulfpax-labs
 DefaultDirName={localappdata}\Programs\gbserver
 DefaultGroupName=gbserver
@@ -33,6 +30,8 @@ SolidCompression=yes
 WizardStyle=modern
 UninstallDisplayIcon={app}\gbserver.exe
 UninstallDisplayName=gbserver
+CloseApplications=yes
+RestartApplications=no
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -40,22 +39,32 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Tasks]
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Additional shortcuts:"; Flags: unchecked
 
+[InstallDelete]
+; Replace the runtime cleanly so libraries from an older build can't linger.
+; ROMs and saves from builds that kept them here are moved to
+; %LOCALAPPDATA%\gbserver\data by gbserver.exe on first launch, so those
+; folders are deliberately left alone.
+Type: filesandordirs; Name: "{app}\_internal"
+Type: filesandordirs; Name: "{app}\seed"
+
 [Files]
-; The whole dist\gbserver folder (exe, _internal\, roms\, saves\).
-Source: "..\dist\gbserver\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs
+Source: "..\dist\gbserver\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
+
+[Dirs]
+Name: "{localappdata}\gbserver\data\roms"; Flags: uninsneveruninstall
+Name: "{localappdata}\gbserver\data\saves"; Flags: uninsneveruninstall
 
 [Icons]
 Name: "{autoprograms}\gbserver"; Filename: "{app}\{#MyAppExeName}"
 Name: "{autoprograms}\gbserver dashboard"; Filename: "http://127.0.0.1:8080/dashboard"
+Name: "{autoprograms}\gbserver ROMs and saves"; Filename: "{localappdata}\gbserver\data"
+Name: "{autoprograms}\gbserver update log"; Filename: "{localappdata}\gbserver\launcher.log"
 Name: "{autodesktop}\gbserver"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
-Name: "{autodesktop}\gbserver dashboard"; Filename: "http://127.0.0.1:8080/dashboard"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "Run gbserver now"; Flags: nowait postinstall skipifsilent
 
 [UninstallDelete]
-; Clean anything added at runtime inside the app folder (roms\ and saves\
-; grow after install), then remove the app dir once empty.
-Type: filesandordirs; Name: "{app}\roms"
-Type: filesandordirs; Name: "{app}\saves"
+; Downloaded code versions are disposable; ROMs, saves and settings are kept.
+Type: filesandordirs; Name: "{localappdata}\gbserver\app"
 Type: dirifempty; Name: "{app}"

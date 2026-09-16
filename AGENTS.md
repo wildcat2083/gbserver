@@ -29,3 +29,9 @@ the user explicitly says yes to a specific edit.
 - Fullscreen overlay controls (`#gameStage:fullscreen .emulator-controls .ff-btn`)
   are intentionally styled with fixed light-on-dark colors since the
   fullscreen backdrop is always black regardless of theme.
+- Windows build (`windows/`) is auto-updating: gbserver.exe is a runtime +
+  launcher that downloads this branch from GitHub into
+  `%LOCALAPPDATA%\gbserver\app\<commit>` and runs it; ROMs/saves live in
+  `%LOCALAPPDATA%\gbserver\data`. Every push to this branch ships to all
+  Windows installs. A commit must contain `windows/runtime.json` or the
+  launcher ignores it. See `windows/README.md`.

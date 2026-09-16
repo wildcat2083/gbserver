@@ -1,0 +1,16 @@
+# Normalize to LF in the repo and on checkout, even when cloned on Windows -
+# systemd, nginx, sudoers, and shell all choke on stray \r characters.
+* text=auto eol=lf
+
+*.jpg binary
+*.png binary
+*.gb binary
+*.gbc binary
+*.state binary
+*.sav binary
+
+# Windows batch files and Inno Setup scripts need CRLF - cmd.exe mis-parses
+# labels and goto in LF-only batch files.
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.iss text eol=crlf

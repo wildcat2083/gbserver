@@ -1,4 +1,5 @@
 pyboy
+pillow
 flask
 flask-limiter
 flask-sock
@@ -6,11 +7,8 @@ numpy
 packaging
 pyinstaller
 
-# Optional: the Rust-based boytacean engine. No Windows wheel is published
-# (every release on PyPI is source-only), so on Windows it must be compiled
-# from source, which needs a Rust toolchain:
-#   pip install setuptools-rust
-#   pip install boytacean
-# and then rebuild. Without it, the server runs on PyBoy only, which is
-# fully supported. Uncomment the line below only if you have Rust installed.
+# Optional: the Rust-based boytacean engine has no Windows wheel, so it must
+# be compiled from source (needs a Rust toolchain):
+#   pip install setuptools-rust boytacean
+# Uncomment only if you have Rust installed, then rebuild.
 # boytacean

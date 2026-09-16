@@ -2,6 +2,7 @@ from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from flask import Flask
 from flask_sock import Sock
+import os
 from pathlib import Path
 from werkzeug.middleware.proxy_fix import ProxyFix
 
@@ -13,7 +14,12 @@ app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_BYTES
 
 
-app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
+# Behind nginx (the Pi), trust one hop of X-Forwarded-* so rate limits and
+# IP blocks see the real client. Serving directly (the Windows build), those
+# headers come from the client itself and must be ignored, or anyone could
+# spoof their address.
+if os.environ.get("GBSERVER_BEHIND_PROXY", "1") != "0":
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 sock = Sock(app)
 
 
@@ -46,6 +52,7 @@ rooms_module.start_reaper()
 
 import routes
 import admin
+import supervisor_hooks  # noqa: F401  (inactive unless run by the Windows launcher)
 
 if __name__ == "__main__":
 

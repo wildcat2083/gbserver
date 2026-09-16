@@ -1,5 +1,4 @@
 import os
-import sys
 import threading
 from pathlib import Path
 
@@ -37,20 +36,22 @@ FAST_FORWARD_SPEED = 4
 CHAT_RATE_WINDOW_SECONDS = 10
 CHAT_RATE_MAX_MESSAGES = 8
 
-BASE_DIR = (
-    Path(sys.executable).resolve().parent
-    if getattr(sys, "frozen", False)
-    else Path(__file__).resolve().parent
-)
-ROMS_DIR = BASE_DIR / "roms"
-SAVES_DIR = BASE_DIR / "saves"
-ROOM_SAVES_DIR = BASE_DIR / "saves" / "rooms"
+# BASE_DIR is where the code lives. DATA_DIR is where ROMs, saves and other
+# runtime state live - the same folder by default (the Pi deployment), or
+# wherever GBSERVER_DATA_DIR points (the auto-updating Windows build keeps
+# data outside the code folder so updates never touch it).
+BASE_DIR = Path(__file__).resolve().parent
+DATA_DIR = Path(os.environ["GBSERVER_DATA_DIR"]).resolve() if os.environ.get("GBSERVER_DATA_DIR") else BASE_DIR
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+ROMS_DIR = DATA_DIR / "roms"
+SAVES_DIR = DATA_DIR / "saves"
+ROOM_SAVES_DIR = DATA_DIR / "saves" / "rooms"
 ROMS_DIR.mkdir(exist_ok=True)
 SAVES_DIR.mkdir(exist_ok=True)
 ROOM_SAVES_DIR.mkdir(parents=True, exist_ok=True)
 
 
-OFFLINE_FLAG_PATH = BASE_DIR / "offline.flag"
+OFFLINE_FLAG_PATH = DATA_DIR / "offline.flag"
 
 
 # roms/ holds only ROMs (and optional .sym debug symbols next to them).
@@ -202,5 +203,5 @@ def migrate_roms_folder():
             print(f"[warn] couldn't move {p} out of roms/: {e}")
 
     for src, dst in moves:
-        print(f"[info] moved {src.name} from roms/ to {dst.relative_to(BASE_DIR)}")
+        print(f"[info] moved {src.name} from roms/ to {dst.relative_to(DATA_DIR)}")
     return moves

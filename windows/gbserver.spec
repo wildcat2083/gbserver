@@ -1,14 +1,12 @@
 # -*- mode: python ; coding: utf-8 -*-
-# gbserver PyInstaller spec - one-FOLDER build (the recommended, stable mode
-# for the multiprocessing emulator worker).
+# gbserver auto-updating runtime - one-folder build.
 #
-# Build with (from the project root):
-#   python -m PyInstaller --noconfirm --clean windows/gbserver.spec
-# Output: dist/gbserver/gbserver.exe  (plus _internal/, roms\ and saves\
-#          are copied next to it afterwards by build_exe.cmd)
+# Build (from the project root):   windows\build_exe.cmd
+# Output: dist\gbserver\gbserver.exe + _internal\
+#
+# The exe runs windows/launcher.py, which downloads gbserver's code from
+# GitHub and keeps it up to date. See spec_common.py for what's bundled.
 
-
-import os
 import sys
 from pathlib import Path
 
@@ -19,11 +17,11 @@ import spec_common  # noqa: E402
 spec_dir, project_root = spec_common.resolve(SPECPATH)
 
 a = Analysis(
-    [str(spec_dir / "run_windows.py")],
+    [str(spec_dir / "launcher.py")],
     **spec_common.analysis_kwargs(SPECPATH),
 )
 
-pyz = PYZ(a.pure, a.zipped_data, cipher=None)
+pyz = PYZ(a.pure, a.zipped_data)
 
 exe = EXE(
     pyz,
@@ -34,7 +32,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,
     console=True,
 )
 
@@ -44,6 +42,6 @@ coll = COLLECT(
     a.zipfiles,
     a.datas,
     strip=False,
-    upx=True,
+    upx=False,
     name="gbserver",
 )
