@@ -1,3 +1,4 @@
+from pathlib import Path
 import math
 import signal
 import queue
@@ -19,6 +20,8 @@ def run_worker(cmd_queue, out_queue, roms_dir, saves_dir, sound_sample_rate,
             signal.signal(sig, signal.SIG_DFL)
 
     from pyboy import PyBoy
+    from debug_core import DebugCore
+    from config import rom_symbols_path
     try:
         from boytacean.pyboy import PyBoyV2 as Boytacean
         boytacean_available = True
@@ -56,6 +59,25 @@ def run_worker(cmd_queue, out_queue, roms_dir, saves_dir, sound_sample_rate,
     frame_no = 0
     autosave_every = 60 * 60 * autosave_interval_minutes
 
+    def make_pyboy(rom_file, **kwargs):
+        """Create PyBoy from the ROM's bytes rather than its path.
+
+        Given a path, PyBoy reads and writes name.gb.ram / .rtc / .state files
+        beside the ROM on its own. Given bytes, it never touches roms/ - all
+        persistence stays in saves/ and is handled by this worker.
+        """
+        rom_file = Path(rom_file)
+        symbols = rom_symbols_path(rom_file)
+        return PyBoy(
+            io.BytesIO(rom_file.read_bytes()),
+            window="null",
+            sound_emulated=True,
+            sound_sample_rate=sound_sample_rate,
+            sound_volume=sound_volume,
+            symbols=str(symbols) if symbols else None,
+            **kwargs,
+        )
+
     def send_status():
         nonlocal last_status_sent
         status = {
@@ -76,7 +98,7 @@ def run_worker(cmd_queue, out_queue, roms_dir, saves_dir, sound_sample_rate,
             if autosave:
                 try:
                     save_path = saves_dir / (rom_path.stem + ".state")
-                    with open(save_path, "wb") as f:
+                    with dbg.breakpoints_removed(), open(save_path, "wb") as f:
                         pyboy.save_state(f)
                 except Exception as e:
                     print(f"[worker] could not save state on stop: {e}")
@@ -85,6 +107,7 @@ def run_worker(cmd_queue, out_queue, roms_dir, saves_dir, sound_sample_rate,
             except Exception:
                 pass
             pyboy = None
+            dbg.detach()
             last_frame_raw = None
             out_queue.put({"type": "stopped"})
         send_status()
@@ -97,6 +120,12 @@ def run_worker(cmd_queue, out_queue, roms_dir, saves_dir, sound_sample_rate,
 
         active_cheats = []
 
+        if (
+            not isinstance(filename, str)
+            or Path(filename).name != filename
+            or filename in ("", ".", "..")
+        ):
+            raise FileNotFoundError(filename)
         candidate = roms_dir / filename
 
         is_same_rom = rom_path is not None and rom_path == candidate
@@ -132,16 +161,10 @@ def run_worker(cmd_queue, out_queue, roms_dir, saves_dir, sound_sample_rate,
             )
             engine_name = "boytacean"
         else:
-            pyboy_kwargs = dict(
-                window="null",
-                sound_emulated=True,
-                sound_sample_rate=sound_sample_rate,
-                sound_volume=sound_volume,
-            )
+            extra = {}
             if ram_bytes is not None:
-
-                pyboy_kwargs["ram_file"] = io.BytesIO(ram_bytes)
-            new_pyboy = PyBoy(str(candidate), **pyboy_kwargs)
+                extra["ram_file"] = io.BytesIO(ram_bytes)
+            new_pyboy = make_pyboy(candidate, **extra)
             engine_name = "pyboy"
 
         new_pyboy.set_emulation_speed(0)
@@ -157,6 +180,7 @@ def run_worker(cmd_queue, out_queue, roms_dir, saves_dir, sound_sample_rate,
                 print(f"[worker] could not load save state: {e}")
 
         pyboy = new_pyboy
+        dbg.attach(pyboy, engine_name)
         rom_path = candidate
         running = True
         fast_forward = False
@@ -178,7 +202,7 @@ def run_worker(cmd_queue, out_queue, roms_dir, saves_dir, sound_sample_rate,
         if pyboy is None or rom_path is None:
             raise ValueError("no ROM is currently loaded")
         save_path = saves_dir / (rom_path.stem + ".state")
-        with open(save_path, "wb") as f:
+        with dbg.breakpoints_removed(), open(save_path, "wb") as f:
             pyboy.save_state(f)
 
     def do_extract_sav():
@@ -189,37 +213,34 @@ def run_worker(cmd_queue, out_queue, roms_dir, saves_dir, sound_sample_rate,
             raise ValueError("extracting a .sav requires the pyboy engine")
 
         snapshot = io.BytesIO()
-        pyboy.save_state(snapshot)
+        with dbg.breakpoints_removed():
+            pyboy.save_state(snapshot)
         snapshot.seek(0)
 
         ram_buf = io.BytesIO()
-        pyboy.stop(ram_file=ram_buf)
+        # Explicit buffers: PyBoy would otherwise write name.gb.rtc beside the ROM
+        pyboy.stop(ram_file=ram_buf, rtc_file=io.BytesIO())
         ram_buf.seek(0)
         sav_bytes = ram_buf.read()
 
-        new_pyboy = PyBoy(
-            str(rom_path),
-            window="null",
-            sound_emulated=True,
-            sound_sample_rate=sound_sample_rate,
-            sound_volume=sound_volume,
-        )
+        new_pyboy = make_pyboy(rom_path)
         new_pyboy.load_state(snapshot)
         new_pyboy.set_emulation_speed(0)
         pyboy = new_pyboy
+        dbg.attach(pyboy, engine_name)
 
         return sav_bytes
 
     def do_save_to_path(target_path):
         if pyboy is None:
             raise ValueError("no ROM is currently loaded")
-        with open(target_path, "wb") as f:
+        with dbg.breakpoints_removed(), open(target_path, "wb") as f:
             pyboy.save_state(f)
 
     def do_load_from_path(source_path):
         if pyboy is None:
             raise ValueError("no ROM is currently loaded")
-        with open(source_path, "rb") as f:
+        with dbg.breakpoints_removed(), open(source_path, "rb") as f:
             pyboy.load_state(f)
 
     def do_set_cheats(codes):
@@ -296,7 +317,9 @@ def run_worker(cmd_queue, out_queue, roms_dir, saves_dir, sound_sample_rate,
                 out_queue.put({"type": "ack", "req_id": req_id, "ok": ok, "error": error})
 
         try:
-            if cmd == "load_rom":
+            if isinstance(cmd, str) and cmd.startswith("dbg_"):
+                dbg.handle_and_ack(msg)
+            elif cmd == "load_rom":
                 result = do_load_rom(msg["filename"], msg.get("load_save", True))
                 out_queue.put({
                     "type": "ack", "req_id": req_id, "ok": True, "error": result,
@@ -345,6 +368,13 @@ def run_worker(cmd_queue, out_queue, roms_dir, saves_dir, sound_sample_rate,
         fast_forward = enabled
         send_status()
 
+    dbg = DebugCore(cmd_queue, out_queue, handle_command)
+
+    def next_command():
+        if dbg.deferred:
+            return dbg.deferred.pop(0)
+        return cmd_queue.get_nowait()
+
     def log_crash(tb):
 
         import sys
@@ -361,7 +391,7 @@ def run_worker(cmd_queue, out_queue, roms_dir, saves_dir, sound_sample_rate,
 
         if pyboy is None:
             try:
-                msg = cmd_queue.get(timeout=0.5)
+                msg = dbg.deferred.pop(0) if dbg.deferred else cmd_queue.get(timeout=0.5)
             except queue.Empty:
                 continue
             if msg.get("cmd") == "shutdown":
@@ -371,7 +401,7 @@ def run_worker(cmd_queue, out_queue, roms_dir, saves_dir, sound_sample_rate,
 
         try:
             while True:
-                msg = cmd_queue.get_nowait()
+                msg = next_command()
                 if msg.get("cmd") == "shutdown":
                     running_worker = False
                     break
@@ -388,7 +418,17 @@ def run_worker(cmd_queue, out_queue, roms_dir, saves_dir, sound_sample_rate,
             next_frame = time.monotonic()
             applied_fast_forward = fast_forward
 
+        if dbg.should_skip_tick():
+            time.sleep(0.02)
+            next_frame = time.monotonic()
+            continue
+
+        dbg.sync_breakpoints()
         alive = pyboy.tick(1, True)
+        if pyboy is None:
+            # a deferred stop/load ran while held at a breakpoint inside tick()
+            continue
+        dbg.after_frame()
 
         if active_cheats:
             try:

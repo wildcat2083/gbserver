@@ -1,9 +1,9 @@
 # Headless Game Boy Server (Pi / PC edition)
 
-Same idea as the ESP32 headless Game Boy project — a Game Boy emulator
-that streams video over WiFi to any browser on your network — but running
-as a normal Python program instead of on ESP32 firmware. No flashing, no
-COM ports, no PSRAM limits.
+Same idea as the ESP32 headless Game Boy project - a Game Boy emulator
+that streams video and audio to any browser - but running as a normal
+Python program instead of on ESP32 firmware. No flashing, no COM ports,
+no PSRAM limits.
 
 ## Setup (quick, for testing on your own machine)
 
@@ -18,19 +18,24 @@ Then, from any device on the same network, open:
 http://<this-machine's-LAN-IP>:8080/
 ```
 
-(Find the IP with `ipconfig` on Windows, `ip addr` / `ifconfig` on Linux/Mac,
-or `hostname -I` on a Raspberry Pi.)
+(Find the IP with `ipconfig` on Windows, `ip addr` on Linux/Mac, or
+`hostname -I` on a Raspberry Pi.)
 
 ## Production deployment (gunicorn + nginx)
 
-This is the setup for running it as a persistent service — e.g. on a
-Raspberry Pi or home server that's always on. Assumes a Debian/Ubuntu-like
-system (adjust package manager commands if different).
+**Automated:** copy `gbserver.zip` and `deploy/deploy.sh` to the Pi's home
+folder and run `bash deploy.sh` as the service user. It backs up, installs
+everything below, runs security checks, and rolls back on any failure.
+Re-running it is safe. The manual steps follow for reference.
+
+
+This is the setup for running it as a persistent service on a Raspberry
+Pi or home server. Assumes a Debian-like system.
 
 **1. Copy the project and set up a virtualenv**
 
 ```
-git clone <this repo, or just copy the folder> gbserver
+git clone <this repo> gbserver
 cd gbserver
 python3 -m venv venv
 ./venv/bin/pip install -r requirements.txt
@@ -41,118 +46,165 @@ python3 -m venv venv
 ```
 ./venv/bin/gunicorn -c gunicorn.conf.py app:app
 ```
-Visit `http://<machine-ip>:8080/` — if that works, Ctrl+C and move on.
+
+gunicorn binds to `127.0.0.1:8080`, so test from the machine itself
+(`curl -I http://127.0.0.1:8080/`), then Ctrl+C.
 
 ⚠️ **Do not raise `workers` above 1 in `gunicorn.conf.py`.** The running
-emulator and connected WebSocket clients are in-process state; multiple
-worker processes would each get their own empty, disconnected copy. See
-the comment at the top of `gunicorn.conf.py` for the full explanation.
-Concurrency across many simultaneous viewers is handled by the `gthread`
-worker class within that single process instead - not `gevent`, which
-was tried first and dropped after a real production crash
-(`ValueError: semaphore or lock released too many times`, caused by
-gevent's monkey-patching corrupting threading internals when multiple
-`multiprocessing.Queue` objects and threads coexist).
+emulators and connected WebSocket clients are in-process state; multiple
+worker processes would each get their own empty, disconnected copy.
+Concurrency across many viewers is handled by the `gthread` worker class
+within that single process instead - not `gevent`, which was tried first
+and dropped after a production crash (`ValueError: semaphore or lock
+released too many times`, caused by gevent's monkey-patching corrupting
+threading internals when multiple `multiprocessing.Queue` objects and
+threads coexist).
 
-**3. Install the systemd service**
+**3. Create the secrets file**
 
-Edit `deploy/systemd/gbserver.service` first — set `User`, `WorkingDirectory`,
-and `ExecStart` to match your actual username and install path (it assumes
-`pi` / `/home/pi/gbserver` as a placeholder).
+The admin token is never stored in the repo. Generate one and put it in
+`/etc/gbserver.env`:
+
+```
+sudo install -m 600 -o root -g root deploy/systemd/gbserver.env.example /etc/gbserver.env
+openssl rand -hex 32          # copy this
+sudo nano /etc/gbserver.env   # paste after GBSERVER_ADMIN_TOKEN=
+```
+
+If the token is missing, a placeholder like `changeme`, or shorter than
+32 characters, the app logs a warning and the admin API stays disabled.
+
+**4. Install the systemd service**
+
+Edit `deploy/systemd/gbserver.service` first if your user or install path
+isn't `luna` / `/home/luna/gbserver`.
 
 ```
 sudo cp deploy/systemd/gbserver.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now gbserver
-sudo systemctl status gbserver     # should show "active (running)"
-journalctl -u gbserver -f          # tail logs
+sudo systemctl status gbserver
+journalctl -u gbserver -f
 ```
 
-At this point the app is running on `127.0.0.1:8080`, but only reachable
-from the machine itself — that's intentional, nginx is what exposes it.
+**5. (Optional) Allow the dashboard's certificate-expiry panel**
 
-**4. Install and configure nginx**
+The dashboard checks cert expiry with `sudo -n openssl`. The included
+sudoers file allows exactly those two commands and nothing else:
 
-This config serves two hostnames with two different certificates via
-SNI (see the comment at the top of `deploy/nginx/gbserver.conf`) - an
-internet-facing one with a real Let's Encrypt cert, and a LAN-only one
-with an internal CA cert. Adjust the hostnames and certificate paths in
-`gbserver.conf` to match your own setup before installing it - the ones
-committed here are specific to this deployment's actual domains.
+```
+sudo visudo -cf deploy/sudoers/gbserver-certcheck
+sudo install -m 440 -o root -g root deploy/sudoers/gbserver-certcheck /etc/sudoers.d/gbserver-certcheck
+```
+
+Edit the username and cert paths in it first if yours differ.
+
+**6. Install and configure nginx**
+
+The nginx config serves two hostnames with two certificates via SNI:
+
+- `gbserver.wulfpax-labs.com` - internet-facing, Let's Encrypt cert.
+  The admin dashboard and admin API return 404, and adding or deleting
+  ROMs returns 403.
+- `gbserver-internal.wulfpax-labs.com` - LAN-only, internal CA cert,
+  everything available.
+
+Adjust hostnames and certificate paths in `deploy_gbserver.conf` to match
+your setup before installing.
 
 ```
 sudo apt install nginx
 sudo mkdir -p /etc/nginx/snippets
-sudo cp deploy/nginx/gbserver.conf /etc/nginx/sites-available/gbserver.conf
-sudo cp deploy/nginx/snippets/gbserver-locations.conf /etc/nginx/snippets/
-sudo ln -s /etc/nginx/sites-available/gbserver.conf /etc/nginx/sites-enabled/
-sudo rm -f /etc/nginx/sites-enabled/default   # optional, avoids the default page colliding
-sudo nginx -t                                  # check config syntax
-sudo systemctl restart nginx
+sudo cp deploy/nginx/deploy_gbserver.conf /etc/nginx/sites-available/gbserver.conf
+sudo cp deploy/nginx/deploy_gbserver-locations.conf /etc/nginx/snippets/gbserver-locations.conf
+sudo ln -sf /etc/nginx/sites-available/gbserver.conf /etc/nginx/sites-enabled/
+sudo rm -f /etc/nginx/sites-enabled/default   # optional
+sudo nginx -t
+sudo systemctl reload nginx
 ```
 
-Both certificates need to already exist at the paths `gbserver.conf`
-references before this will work - issuing a Let's Encrypt cert
-(`certbot`) and/or an internal CA cert is a separate step this doesn't
-cover. Let's Encrypt certs expire every 90 days - confirm `certbot`'s
-own renewal timer is actually installed and enabled
-(`systemctl list-timers | grep certbot`), since nothing else here
-handles that automatically.
-
-Now open `http://<machine-ip>/` (port 80, no `:8080` needed) from any
-device on your network.
-
-**5. (Optional) HTTPS**
-
-Not required on a LAN, but if you want it — e.g. to access this from
-outside your home network via a reverse proxy/VPN — use `certbot` for a
-real domain, or a self-signed cert for LAN-only HTTPS. Either way, once
-TLS terminates at nginx, no changes are needed in `gbserver.conf` besides
-the usual `listen 443 ssl` block; the WebSocket `proxy_set_header Upgrade`
-lines stay the same.
+Both certificates must already exist at the paths the config references.
+Let's Encrypt certs expire every 90 days - confirm certbot's renewal timer
+is enabled (`systemctl list-timers | grep certbot`). Plain HTTP on port
+80 only serves ACME challenges and redirects everything else to HTTPS.
 
 ### Updating the app later
 
 ```
 cd gbserver
-git pull   # or copy over your changed files
+git pull
 sudo systemctl restart gbserver
 ```
 
-nginx doesn't need restarting for app code changes — only for changes to
-`gbserver.conf` itself.
+nginx only needs `sudo nginx -t && sudo systemctl reload nginx` when the
+files under `deploy/nginx/` change (re-copy them first).
 
 ## Using it
 
-1. Open the settings gear (top right) and upload a `.gb` or `.gbc` file
-   (use only legally-obtained ROMs).
-2. Tap "Play" next to the ROM you want in the ROM library list.
-3. Use the on-screen D-pad/A/B or your keyboard (arrow keys, Z/X, Enter, Shift)
-   to play.
+1. Open the settings gear and upload a `.gb` or `.gbc` file (use only
+   legally-obtained ROMs). Uploads are LAN-only when served through the
+   nginx config above. Uploading a name that already exists is refused -
+   delete the old one first.
+2. Tap "Play" next to the ROM you want.
+3. Use the on-screen D-pad/A/B, a gamepad, or the keyboard (arrow keys,
+   Z/X, Enter, Shift).
 
-The settings panel also has:
-- **Button haptics** — short vibrate on press (Android / supported browsers)
-- **Audio buffer** — how many emulator ticks get batched into one audio
-  chunk before sending (lower = snappier but more prone to clicking, higher
-  = smoother but a bit more lag); adjustable live
-- **Save data** — download the current ROM's save state, upload one, or
-  delete it (deleting/uploading reloads the ROM immediately to apply it)
-- **Stop emulation** — stops the running ROM; the library and saves are
-  untouched, just pick a ROM again to resume
+The settings panel also has button haptics, an audio buffer slider,
+save-state download/upload/delete, `.sav` conversion, GameShark cheats,
+fast-forward, and stop emulation.
 
-Save states also autosave automatically to `saves/` every ~15 seconds and
-restore the next time you load that ROM.
+Save states autosave to `saves/` every few minutes (see
+`AUTOSAVE_INTERVAL_MINUTES` in `config.py`) and restore the next time you
+load that ROM.
+
+### Rooms, chat, and control
+
+- The shared game at `/` can be watched and played by everyone; the
+  first connected client is the controller, and others can request
+  control.
+- Private rooms live at `/r/<code>/`, with their own emulator and saves.
+  Idle rooms are reaped after 30 minutes. `GBSERVER_MAX_ROOMS` caps how
+  many exist at once.
+- Each session has a small rate-limited chat.
+
+### Admin dashboard (LAN only)
+
+`/dashboard` on the internal hostname, authenticated with the admin
+token. It shows sessions and connected clients, and can kick or move
+clients, block IPs, toggle the shared game, take the server offline,
+manage the ROM library, and show certificate expiry.
+
+### Hidden debugger
+
+There's a BGB-style debugger tucked away as an easter egg: memory viewer and
+editor, memory search, execution breakpoints, value watches, freezes, and
+CPU registers. See `docs/DEBUGGER.md` for how to open and use it.
+
+Anyone connected can look; only the current controller can change memory,
+set breakpoints, or pause. Everything resets when control changes hands.
+Set `GBSERVER_DEBUGGER=internal` in `/etc/gbserver.env` to limit it to the
+LAN hostname, or `off` to disable it.
+
+## Where files live
+
+- `roms/` holds only ROMs (`.gb`, `.gbc`), plus an optional `.sym` symbol file
+  next to a ROM for the debugger. The server never writes anything here.
+- `saves/` holds everything the server writes: save states (`<rom>.state`),
+  per-ROM engine choices (`_engine_overrides.json`), and private rooms'
+  saves under `saves/rooms/<code>/`.
+- On startup, anything older versions (or PyBoy itself) left in `roms/` is
+  moved out automatically: save states go to `saves/`, and battery `.ram`,
+  `.rtc` and `.sav` files go to `saves/_from_roms/`. Nothing is overwritten -
+  if `saves/` already has a state for that ROM, the old one goes to
+  `saves/_from_roms/` too. The log lists each file it moved.
 
 ## Notes
 
-- Runs on anything with Python 3: a Raspberry Pi, an old laptop, a
-  spare mini PC, or a container on your home server.
-- Audio is streamed live over the same WebSocket as video (24kHz stereo
-  PCM). Browsers block audio until a user gesture, so tap/click the
-  screen once after loading a ROM to unlock sound.
-- Only one active game is emulated at a time, but any number of devices
-  on the network can connect and watch/play the same session simultaneously
-  (unlike the ESP32 version's single-client limit). Note that with audio on,
-  every connected client gets its own independently-scheduled audio stream,
-  so playback across multiple devices won't be perfectly in sync with each
-  other (video and audio stay in sync on a given device).
+- Runs on anything with Python 3.
+- Audio streams over the same WebSocket as video as PCM (sample rate is
+  `SOUND_SAMPLE_RATE` in `config.py`). Browsers block audio until a user
+  gesture, so tap the screen once after loading a ROM.
+- Each connected client gets its own independently scheduled audio
+  stream, so playback across multiple devices won't be perfectly in sync.
+- Runtime state (`blocked_ips.json`, `offline.flag`, ROMs, saves) is
+  gitignored and lives only on the server.

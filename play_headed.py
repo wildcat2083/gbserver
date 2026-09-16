@@ -1,4 +1,5 @@
 import argparse
+import io
 import sys
 from pathlib import Path
 
@@ -42,8 +43,13 @@ def main():
     save_path = save_path_for(rom_path)
     SAVES_DIR.mkdir(exist_ok=True)
 
+    # Load from bytes so PyBoy never writes .ram/.rtc/.state files beside the
+    # ROM (its Z/X save-state hotkeys are disabled this way too - quitting saves
+    # to saves/ instead).
+    sym_path = next((c for c in (rom_path.with_suffix(".sym"), rom_path.with_name(rom_path.name + ".sym")) if c.is_file()), None)
     pyboy = PyBoy(
-        str(rom_path),
+        io.BytesIO(rom_path.read_bytes()),
+        symbols=str(sym_path) if sym_path else None,
         window="SDL2",
         scale=args.scale,
         sound_emulated=True,

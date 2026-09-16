@@ -4,6 +4,8 @@ import queue
 import threading
 import time
 from collections import deque
+
+import numpy as np
 from pathlib import Path
 
 from config import (
@@ -19,10 +21,14 @@ from config import (
     MSG_VIDEO,
     NO_INPUT_TIMEOUT_SECONDS,
     ROMS_DIR,
+    ROOM_SAVES_DIR,
+    SAVES_DIR,
     SOUND_SAMPLE_RATE,
     SOUND_VOLUME,
+    safe_rom_name,
 )
 from engine_config import get_engine_for_rom
+from debug_core import REGIONS as DEBUG_REGIONS
 from emu_worker import run_worker
 
 
@@ -124,6 +130,11 @@ class Emulator:
         self._no_input_tracked_ws = None
         self._controller_has_input = False
 
+        self._debug_owner = None
+        self._debug_paused = False
+        self._debug_search = {}
+        self._debug_rate = {}
+
         self._current_rom_name = None
         self.engine_name = "pyboy"
         self.fast_forward = False
@@ -198,6 +209,10 @@ class Emulator:
                 self._broadcast_stopped()
                 self._maybe_start_idle_controller_timer()
                 self._maybe_start_no_input_timer()
+            elif msg_type == "debug":
+                state = msg.get("state") or {}
+                self._debug_paused = bool(state.get("paused"))
+                self._broadcast("dbgevt:" + json.dumps({"event": msg.get("event"), "state": state}))
             elif msg_type == "ack":
                 req_id = msg["req_id"]
                 with self._ack_lock:
@@ -213,15 +228,33 @@ class Emulator:
             p.name for p in list(ROMS_DIR.glob("*.gb")) + list(ROMS_DIR.glob("*.gbc"))
         )
 
+    @staticmethod
+    def save_locations_index():
+        """Map ROM stem -> where a .state exists: "shared" and/or room codes.
+
+        Scans saves/*.state and saves/rooms/<code>/*.state once, so the
+        library listing stays cheap even with hundreds of ROMs.
+        """
+        index = {}
+        for p in SAVES_DIR.glob("*.state"):
+            index.setdefault(p.stem, []).append("shared")
+        for p in sorted(ROOM_SAVES_DIR.glob("*/*.state")):
+            index.setdefault(p.stem, []).append(p.parent.name)
+        return index
+
     def rom_library_info(self):
         info = []
+        locations = self.save_locations_index()
         for name in self.list_roms():
             p = ROMS_DIR / name
             save_path = self.saves_dir / (p.stem + ".state")
             info.append({
                 "filename": name,
                 "size_bytes": p.stat().st_size,
+                # has_save: this session's own save (drives Resume on the player page)
                 "has_save": save_path.exists(),
+                # save_locations: every save for this ROM - shared and any room
+                "save_locations": locations.get(p.stem, []),
                 "engine": get_engine_for_rom(name),
             })
         return info
@@ -239,6 +272,7 @@ class Emulator:
         return self.saves_dir / (rom_path.stem + ".state")
 
     def delete_rom(self, filename):
+        filename = safe_rom_name(filename)
         if self._current_rom_name == filename:
             self.stop()
         rom_path = ROMS_DIR / filename
@@ -249,6 +283,10 @@ class Emulator:
             save_path.unlink()
 
     def load_rom(self, filename, load_save=True):
+        try:
+            filename = safe_rom_name(filename)
+        except ValueError:
+            raise FileNotFoundError(filename)
         if not (ROMS_DIR / filename).exists():
             raise FileNotFoundError(filename)
         ack = self._send_and_wait({
@@ -296,7 +334,9 @@ class Emulator:
         rom_name = self._current_rom_name
 
         if rom_name is None:
-            stem = Path(file_storage.filename).stem
+            stem = Path(Path(file_storage.filename or "").name).stem
+            if not stem or stem in (".", ".."):
+                raise ValueError("invalid save filename")
             candidate_gb = ROMS_DIR / f"{stem}.gb"
             candidate_gbc = ROMS_DIR / f"{stem}.gbc"
             if candidate_gb.exists():
@@ -320,7 +360,9 @@ class Emulator:
         rom_name = self._current_rom_name
 
         if rom_name is None:
-            stem = Path(file_storage.filename).stem
+            stem = Path(Path(file_storage.filename or "").name).stem
+            if not stem or stem in (".", ".."):
+                raise ValueError("invalid save filename")
             candidate_gb = ROMS_DIR / f"{stem}.gb"
             candidate_gbc = ROMS_DIR / f"{stem}.gbc"
             if candidate_gb.exists():
@@ -448,6 +490,8 @@ class Emulator:
             stream.close()
         self._chat_rate_limits.pop(ws, None)
         self._client_remote_addrs.pop(ws, None)
+        self._debug_search.pop(ws, None)
+        self._debug_rate.pop(ws, None)
         if self.pending_control_requester is ws:
             self.pending_control_requester = None
         if was_controller:
@@ -700,9 +744,204 @@ class Emulator:
             clients = list(self.clients)
         controller = clients[0] if clients else None
         viewer_count = max(0, len(clients) - 1)
+        if self._debug_owner is not None and self._debug_owner is not controller:
+            # Whoever set breakpoints/freezes/pause lost control - never leave the
+            # next controller (or the viewers) stuck in someone else's debug session.
+            self._debug_owner = None
+            try:
+                self.cmd_queue.put({"cmd": "dbg_reset"})
+            except Exception:
+                pass
         for ws in clients:
             self._send(ws, "controller:1" if ws is controller else "controller:0")
             self._send(ws, f"viewers:{viewer_count}")
 
     def _notify_fast_forward_status(self):
         self._broadcast("fastforward:1" if self.fast_forward else "fastforward:0")
+
+
+    # ---- hidden debugger -----------------------------------------------------
+
+    DEBUG_READ_OPS = {"state", "read", "search_new", "search_filter", "search_results", "search_reset"}
+    DEBUG_CONTROL_OPS = {
+        "write", "set_register", "bp_add", "bp_remove", "bp_clear", "watch_add", "watch_remove",
+        "freeze_set", "freeze_remove", "pause", "continue", "step_frame", "reset",
+    }
+    DEBUG_SEARCH_CONDS = ("eq", "ne", "gt", "lt", "changed", "unchanged", "increased", "decreased")
+    DEBUG_SEARCH_RESULTS = 100
+    DEBUG_RATE_PER_SECOND = 30
+    DEBUG_SEARCH_MIN_INTERVAL = 0.2
+
+    def debug_request(self, ws, raw):
+        try:
+            req = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return {"id": None, "ok": False, "error": "bad request"}
+        if not isinstance(req, dict):
+            return {"id": None, "ok": False, "error": "bad request"}
+        req_id = req.get("id")
+        if not isinstance(req_id, int) or isinstance(req_id, bool):
+            req_id = None
+        op = req.get("op")
+        try:
+            result = self._debug_dispatch(ws, op, req)
+            return {"id": req_id, "ok": True, **result}
+        except (ValueError, TimeoutError) as e:
+            return {"id": req_id, "ok": False, "error": str(e)}
+        except Exception as e:
+            print(f"[warn] debugger op {op!r} failed: {e}")
+            return {"id": req_id, "ok": False, "error": "internal error"}
+
+    def _debug_rate_ok(self, ws, op):
+        now = time.monotonic()
+        rate = self._debug_rate.setdefault(ws, {"stamps": deque(), "last_search": 0.0})
+        stamps = rate["stamps"]
+        while stamps and now - stamps[0] > 1.0:
+            stamps.popleft()
+        if len(stamps) >= self.DEBUG_RATE_PER_SECOND:
+            return False
+        if op in ("search_new", "search_filter"):
+            if now - rate["last_search"] < self.DEBUG_SEARCH_MIN_INTERVAL:
+                return False
+            rate["last_search"] = now
+        stamps.append(now)
+        return True
+
+    def _debug_call(self, cmd, **kwargs):
+        ack = self._send_and_wait(dict(kwargs, cmd="dbg_" + cmd))
+        if not ack["ok"]:
+            raise ValueError(ack.get("error") or "debugger command failed")
+        return ack.get("result") or {}
+
+    def _debug_dispatch(self, ws, op, req):
+        if op not in self.DEBUG_READ_OPS and op not in self.DEBUG_CONTROL_OPS:
+            raise ValueError("unknown operation")
+        if not self._debug_rate_ok(ws, op):
+            raise ValueError("slow down")
+        self.touch()
+
+        if op in self.DEBUG_CONTROL_OPS:
+            if not self.is_controller(ws):
+                raise ValueError("Only the current controller can change things - viewers can look around.")
+            self._debug_owner = ws
+            self._controller_has_input = True
+            self._cancel_no_input_timer()
+
+        if op == "state":
+            return {"state": self._debug_call("state"), "is_controller": self.is_controller(ws)}
+
+        if op == "read":
+            r = self._debug_call("read", start=req.get("start"), length=req.get("length"))
+            return {"start": r["start"], "hex": r["data"].hex()}
+
+        if op.startswith("search_"):
+            return self._debug_search_op(ws, op, req)
+
+        passthrough = {
+            "write": ("addr", "values"),
+            "set_register": ("name", "value"),
+            "bp_add": ("bank", "addr"),
+            "bp_remove": ("bank", "addr"),
+            "bp_clear": (),
+            "watch_add": ("addr", "size", "cond", "value"),
+            "watch_remove": ("id",),
+            "freeze_set": ("addr", "value", "size"),
+            "freeze_remove": ("addr",),
+            "pause": (),
+            "continue": (),
+            "step_frame": (),
+            "reset": (),
+        }[op]
+        result = self._debug_call(op, **{k: req.get(k) for k in passthrough if k in req})
+        if op == "reset":
+            self._debug_owner = None
+        return {"result": result}
+
+    def _debug_read_regions(self, regions):
+        r = self._debug_call("read_regions", regions=regions)
+        full = np.zeros(0x10001, dtype=np.int64)
+        for info in r["regions"].values():
+            start = info["start"]
+            arr = np.frombuffer(info["data"], dtype=np.uint8)
+            full[start:start + len(arr)] = arr
+        return full
+
+    def _debug_values_at(self, full, addrs, size):
+        if size == 1:
+            return full[addrs]
+        return full[addrs] | (full[addrs + 1] << 8)
+
+    def _debug_search_summary(self, st, full=None):
+        addrs = st["addrs"][: self.DEBUG_SEARCH_RESULTS]
+        if full is None:
+            full = self._debug_read_regions(st["regions"])
+        cur = self._debug_values_at(full, addrs, st["size"])
+        prev = st["prev"][: self.DEBUG_SEARCH_RESULTS]
+        return {
+            "count": int(len(st["addrs"])),
+            "size": st["size"],
+            "regions": st["regions"],
+            "steps": st["steps"],
+            "results": [
+                {"addr": int(a), "value": int(v), "prev": int(p)}
+                for a, v, p in zip(addrs, cur, prev)
+            ],
+        }
+
+    def _debug_search_op(self, ws, op, req):
+        if op == "search_reset":
+            self._debug_search.pop(ws, None)
+            return {"count": 0, "results": []}
+
+        if op == "search_new":
+            regions = req.get("regions") or ["wram", "hram"]
+            if (not isinstance(regions, list) or not regions
+                    or any(r not in DEBUG_REGIONS for r in regions)):
+                raise ValueError("pick at least one valid region")
+            regions = sorted(set(regions), key=list(DEBUG_REGIONS).index)
+            size = req.get("size", 1)
+            if size not in (1, 2):
+                raise ValueError("size must be 1 or 2")
+            full = self._debug_read_regions(regions)
+            parts = []
+            for name in regions:
+                lo, hi = DEBUG_REGIONS[name]
+                parts.append(np.arange(lo, hi - (size - 1), dtype=np.int64))
+            addrs = np.concatenate(parts)
+            st = {"size": size, "regions": regions, "addrs": addrs,
+                  "prev": self._debug_values_at(full, addrs, size), "steps": 0}
+            self._debug_search[ws] = st
+            return self._debug_search_summary(st, full)
+
+        st = self._debug_search.get(ws)
+        if st is None:
+            raise ValueError("start a new search first")
+
+        if op == "search_results":
+            return self._debug_search_summary(st)
+
+        cond = req.get("cond")
+        if cond not in self.DEBUG_SEARCH_CONDS:
+            raise ValueError("unknown condition")
+        limit = 0xFF if st["size"] == 1 else 0xFFFF
+        value = req.get("value")
+        if cond in ("eq", "ne", "gt", "lt"):
+            if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= limit:
+                raise ValueError(f"value must be 0-{limit}")
+        full = self._debug_read_regions(st["regions"])
+        cur = self._debug_values_at(full, st["addrs"], st["size"])
+        prev = st["prev"]
+        mask = {
+            "eq": lambda: cur == value,
+            "ne": lambda: cur != value,
+            "gt": lambda: cur > value,
+            "lt": lambda: cur < value,
+            "changed": lambda: cur != prev,
+            "unchanged": lambda: cur == prev,
+            "increased": lambda: cur > prev,
+            "decreased": lambda: cur < prev,
+        }[cond]()
+        st["addrs"] = st["addrs"][mask]
+        st["prev"] = cur[mask]
+        st["steps"] += 1
+        return self._debug_search_summary(st, full)

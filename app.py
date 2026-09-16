@@ -5,7 +5,12 @@ from flask_sock import Sock
 from pathlib import Path
 from werkzeug.middleware.proxy_fix import ProxyFix
 
+from config import MAX_UPLOAD_BYTES, migrate_roms_folder
+
+migrate_roms_folder()
+
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_BYTES
 
 
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
