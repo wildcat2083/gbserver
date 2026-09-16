@@ -385,9 +385,22 @@ def run_worker(cmd_queue, out_queue, roms_dir, saves_dir, sound_sample_rate,
         except Exception:
             pass
 
+    import multiprocessing as _mp
+
+    parent = _mp.parent_process()
+    next_parent_check = 0.0
+
     running_worker = True
     while running_worker:
       try:
+        # If the server process died without shutting us down (killed, crashed),
+        # save and exit instead of running on as an orphan.
+        now_check = time.monotonic()
+        if now_check >= next_parent_check:
+            next_parent_check = now_check + 2.0
+            if parent is not None and not parent.is_alive():
+                print("[worker] server process is gone - saving and exiting", flush=True)
+                break
 
         if pyboy is None:
             try:
