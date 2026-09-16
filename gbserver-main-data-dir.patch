@@ -1,0 +1,231 @@
+From e673427f4748cc473fac45f3676e46456378a990 Mon Sep 17 00:00:00 2001
+From: Claude <claude@local>
+Date: Wed, 16 Sep 2026 19:38:49 +0000
+Subject: [PATCH 1/2] Separate data folder (GBSERVER_DATA_DIR), proxy trust
+ toggle, supervisor shutdown hook
+
+- ROMs, saves, blocked_ips.json and offline.flag live under DATA_DIR
+  (defaults to the code folder, so the Pi layout is unchanged)
+- GBSERVER_BEHIND_PROXY=0 stops trusting X-Forwarded-* when serving directly
+- supervisor_hooks: token-protected graceful save-and-exit endpoint, only
+  registered when GBSERVER_SUPERVISOR_TOKEN is set
+---
+ admin.py            |  4 ++--
+ app.py              |  9 +++++++-
+ config.py           | 18 ++++++++++------
+ supervisor_hooks.py | 50 +++++++++++++++++++++++++++++++++++++++++++++
+ 4 files changed, 72 insertions(+), 9 deletions(-)
+ create mode 100644 supervisor_hooks.py
+
+diff --git a/admin.py b/admin.py
+index e76d1c5..6d1375a 100755
+--- a/admin.py
++++ b/admin.py
+@@ -10,7 +10,7 @@ from pathlib import Path
+ from flask import jsonify, render_template, request
+ 
+ from app import app, limiter
+-from config import BASE_DIR, MAX_ROOMS, OFFLINE_CLOSE_CODE, OFFLINE_FLAG_PATH, safe_rom_name, safe_rom_path
++from config import DATA_DIR, MAX_ROOMS, OFFLINE_CLOSE_CODE, OFFLINE_FLAG_PATH, safe_rom_name, safe_rom_path
+ from engine_config import BOYTACEAN_AVAILABLE
+ from rooms import default_emu, get_emulator, rooms, rooms_lock, create_room, shared_game_state
+ 
+@@ -101,7 +101,7 @@ def _log_action(action, detail=""):
+     action_log.appendleft({"ts": time.time(), "action": action, "detail": detail})
+ 
+ 
+-BLOCKED_IPS_PATH = BASE_DIR / "blocked_ips.json"
++BLOCKED_IPS_PATH = DATA_DIR / "blocked_ips.json"
+ 
+ 
+ def _load_blocked_ips():
+diff --git a/app.py b/app.py
+index 580e176..8ad1d0b 100755
+--- a/app.py
++++ b/app.py
+@@ -2,6 +2,7 @@ from flask_limiter import Limiter
+ from flask_limiter.util import get_remote_address
+ from flask import Flask
+ from flask_sock import Sock
++import os
+ from pathlib import Path
+ from werkzeug.middleware.proxy_fix import ProxyFix
+ 
+@@ -13,7 +14,12 @@ app = Flask(__name__)
+ app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_BYTES
+ 
+ 
+-app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
++# Behind nginx (the Pi), trust one hop of X-Forwarded-* so rate limits and
++# IP blocks see the real client. Serving directly (the Windows build), those
++# headers come from the client itself and must be ignored, or anyone could
++# spoof their address.
++if os.environ.get("GBSERVER_BEHIND_PROXY", "1") != "0":
++    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
+ sock = Sock(app)
+ 
+ 
+@@ -46,6 +52,7 @@ rooms_module.start_reaper()
+ 
+ import routes
+ import admin
++import supervisor_hooks  # noqa: F401  (inactive unless run by the Windows launcher)
+ 
+ if __name__ == "__main__":
+ 
+diff --git a/config.py b/config.py
+index a1012f8..a029da0 100755
+--- a/config.py
++++ b/config.py
+@@ -36,16 +36,22 @@ FAST_FORWARD_SPEED = 4
+ CHAT_RATE_WINDOW_SECONDS = 10
+ CHAT_RATE_MAX_MESSAGES = 8
+ 
+-BASE_DIR = Path(__file__).parent
+-ROMS_DIR = BASE_DIR / "roms"
+-SAVES_DIR = BASE_DIR / "saves"
+-ROOM_SAVES_DIR = BASE_DIR / "saves" / "rooms"
++# BASE_DIR is where the code lives. DATA_DIR is where ROMs, saves and other
++# runtime state live - the same folder by default (the Pi deployment), or
++# wherever GBSERVER_DATA_DIR points (the auto-updating Windows build keeps
++# data outside the code folder so updates never touch it).
++BASE_DIR = Path(__file__).resolve().parent
++DATA_DIR = Path(os.environ["GBSERVER_DATA_DIR"]).resolve() if os.environ.get("GBSERVER_DATA_DIR") else BASE_DIR
++DATA_DIR.mkdir(parents=True, exist_ok=True)
++ROMS_DIR = DATA_DIR / "roms"
++SAVES_DIR = DATA_DIR / "saves"
++ROOM_SAVES_DIR = DATA_DIR / "saves" / "rooms"
+ ROMS_DIR.mkdir(exist_ok=True)
+ SAVES_DIR.mkdir(exist_ok=True)
+ ROOM_SAVES_DIR.mkdir(parents=True, exist_ok=True)
+ 
+ 
+-OFFLINE_FLAG_PATH = BASE_DIR / "offline.flag"
++OFFLINE_FLAG_PATH = DATA_DIR / "offline.flag"
+ 
+ 
+ # roms/ holds only ROMs (and optional .sym debug symbols next to them).
+@@ -197,5 +203,5 @@ def migrate_roms_folder():
+             print(f"[warn] couldn't move {p} out of roms/: {e}")
+ 
+     for src, dst in moves:
+-        print(f"[info] moved {src.name} from roms/ to {dst.relative_to(BASE_DIR)}")
++        print(f"[info] moved {src.name} from roms/ to {dst.relative_to(DATA_DIR)}")
+     return moves
+diff --git a/supervisor_hooks.py b/supervisor_hooks.py
+new file mode 100644
+index 0000000..d861439
+--- /dev/null
++++ b/supervisor_hooks.py
+@@ -0,0 +1,50 @@
++"""Graceful shutdown hook for the Windows auto-update launcher.
++
++The launcher runs the server as a child process and restarts it when a new
++version has been downloaded. Killing the process outright would lose any
++progress since the last autosave, so instead it calls this endpoint, which
++saves and stops every emulator and then exits.
++
++The route only exists when GBSERVER_SUPERVISOR_TOKEN is set (the launcher
++generates a random one per start), and the request must carry that token.
++On the Pi deployment the variable is never set, so nothing is registered.
++"""
++
++import hmac
++import os
++import threading
++import time
++
++from flask import jsonify, request
++
++from app import app, limiter
++
++SUPERVISOR_TOKEN = os.environ.get("GBSERVER_SUPERVISOR_TOKEN", "")
++
++
++def _shutdown_everything():
++    import rooms as rooms_module
++
++    time.sleep(0.2)  # let the HTTP response go out first
++    emulators = [rooms_module.default_emu]
++    with rooms_module.rooms_lock:
++        emulators.extend(rooms_module.rooms.values())
++    for emu in emulators:
++        try:
++            emu.shutdown()  # the worker saves state before it exits
++        except Exception as e:
++            print(f"[warn] shutdown of an emulator failed: {e}", flush=True)
++    print("[info] saved and stopped all sessions - exiting for update/restart", flush=True)
++    os._exit(0)
++
++
++if len(SUPERVISOR_TOKEN) >= 32:
++
++    @app.route("/api/internal/shutdown", methods=["POST"])
++    @limiter.exempt
++    def api_internal_shutdown():
++        supplied = request.headers.get("X-Supervisor-Token", "")
++        if not hmac.compare_digest(supplied, SUPERVISOR_TOKEN):
++            return jsonify({"error": "forbidden"}), 403
++        threading.Thread(target=_shutdown_everything, daemon=True).start()
++        return jsonify({"ok": True}), 202
+-- 
+2.43.0
+
+
+From 9f09ac3910e42325d7e438442019a76adba07f2f Mon Sep 17 00:00:00 2001
+From: Claude <claude@local>
+Date: Wed, 16 Sep 2026 19:48:31 +0000
+Subject: [PATCH 2/2] Emulator worker saves and exits if its server process
+ dies; CRLF for Windows scripts
+
+- a killed or crashed server previously left the worker running as an orphan
+- .gitattributes: .cmd/.bat/.iss checked out with CRLF (cmd.exe mis-parses LF labels)
+---
+ .gitattributes |  6 ++++++
+ emu_worker.py  | 13 +++++++++++++
+ 2 files changed, 19 insertions(+)
+
+diff --git a/.gitattributes b/.gitattributes
+index ff585eb..779b6f1 100644
+--- a/.gitattributes
++++ b/.gitattributes
+@@ -8,3 +8,9 @@
+ *.gbc binary
+ *.state binary
+ *.sav binary
++
++# Windows batch files and Inno Setup scripts need CRLF - cmd.exe mis-parses
++# labels and goto in LF-only batch files.
++*.cmd text eol=crlf
++*.bat text eol=crlf
++*.iss text eol=crlf
+diff --git a/emu_worker.py b/emu_worker.py
+index 5197a2a..2ace005 100755
+--- a/emu_worker.py
++++ b/emu_worker.py
+@@ -385,9 +385,22 @@ def run_worker(cmd_queue, out_queue, roms_dir, saves_dir, sound_sample_rate,
+         except Exception:
+             pass
+ 
++    import multiprocessing as _mp
++
++    parent = _mp.parent_process()
++    next_parent_check = 0.0
++
+     running_worker = True
+     while running_worker:
+       try:
++        # If the server process died without shutting us down (killed, crashed),
++        # save and exit instead of running on as an orphan.
++        now_check = time.monotonic()
++        if now_check >= next_parent_check:
++            next_parent_check = now_check + 2.0
++            if parent is not None and not parent.is_alive():
++                print("[worker] server process is gone - saving and exiting", flush=True)
++                break
+ 
+         if pyboy is None:
+             try:
+-- 
+2.43.0
+

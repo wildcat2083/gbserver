@@ -1,0 +1,701 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>gbserver debugger guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans+Condensed:wght@600;700&family=IBM+Plex+Sans:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet">
+<style>
+:root {
+  --paper: #dddbd2;
+  --paper-2: #cfccc1;
+  --panel: #ebe9e2;
+  --ink: #24221d;
+  --ink-soft: #57544a;
+  --rule: #a9a597;
+  --magenta: #8b1e5a;
+  --magenta-ink: #ffffff;
+  --screen: #9bbc0f;
+  --screen-2: #8bac0f;
+  --screen-ink: #0f380f;
+  --screen-mid: #306230;
+  --warn-bg: #f3ddb0;
+  --warn-edge: #b07a10;
+  --chip-changed: #d40000;
+  --chip-frozen: #bfe3ff;
+  --chip-watched: #fff0a8;
+  --chip-brk: #ffb3b3;
+  --chip-pc: #9be59b;
+  --chip-sel: #0a246a;
+  --sans: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --cond: "IBM Plex Sans Condensed", "Arial Narrow", "Segoe UI", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #232227; --paper-2: #2c2b31; --panel: #2f2e35; --ink: #e9e6dc; --ink-soft: #b3afa3;
+    --rule: #4a4852; --magenta: #c94a84; --magenta-ink: #1a0b12; --warn-bg: #3b3120; --warn-edge: #d9a33a;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #232227; --paper-2: #2c2b31; --panel: #2f2e35; --ink: #e9e6dc; --ink-soft: #b3afa3;
+  --rule: #4a4852; --magenta: #c94a84; --magenta-ink: #1a0b12; --warn-bg: #3b3120; --warn-edge: #d9a33a;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; scroll-padding-top: 16px; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font: 17px/1.6 var(--sans);
+}
+a { color: var(--magenta); text-underline-offset: 2px; }
+a:focus-visible, button:focus-visible { outline: 3px solid var(--magenta); outline-offset: 2px; }
+code, kbd, .mono { font-family: var(--mono); font-size: 0.9em; }
+code { background: var(--paper-2); padding: 0.05em 0.35em; border-radius: 3px; }
+kbd {
+  display: inline-block;
+  min-width: 1.6em;
+  padding: 0 0.4em;
+  text-align: center;
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-bottom-width: 3px;
+  border-radius: 4px;
+  line-height: 1.5;
+}
+
+/* ---- hero ------------------------------------------------------------- */
+.hero {
+  background: var(--paper-2);
+  border-bottom: 1px solid var(--rule);
+  padding: 48px 24px 40px;
+}
+.hero-inner {
+  max-width: 1120px;
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 470px);
+  gap: 48px;
+  align-items: center;
+}
+.hero h1 {
+  margin: 0 0 12px;
+  font: 700 clamp(2.4rem, 5vw, 3.6rem)/1.02 var(--cond);
+  letter-spacing: -0.01em;
+}
+.hero p { margin: 0 0 22px; max-width: 46ch; color: var(--ink-soft); font-size: 1.1rem; }
+
+.sequence { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.sequence li { display: contents; }
+.pill, .round {
+  display: inline-flex; align-items: center; justify-content: center;
+  font: 700 0.78rem/1 var(--cond); letter-spacing: 0.06em;
+}
+.pill {
+  height: 26px; padding: 0 14px;
+  color: var(--paper);
+  background: #6f6d66;
+  border-radius: 13px;
+  transform: rotate(-22deg);
+  margin: 6px 2px;
+}
+.round {
+  width: 44px; height: 44px;
+  color: var(--magenta-ink);
+  background: var(--magenta);
+  border-radius: 50%;
+  font-size: 1.05rem;
+  box-shadow: inset 0 -3px 0 rgba(0,0,0,0.25);
+}
+.sequence-note { margin-top: 14px !important; font-size: 0.95rem !important; }
+
+.screen {
+  background: var(--screen);
+  color: var(--screen-ink);
+  border-radius: 10px 10px 40px 10px;
+  padding: 18px 18px 22px;
+  box-shadow: 0 0 0 14px #6b7353, 0 0 0 16px #4c513a;
+  margin: 16px;
+  font: 600 14px/1.55 var(--mono);
+  overflow-x: auto;
+}
+.screen .row { white-space: pre; }
+.screen .dim { color: var(--screen-mid); }
+.screen .hot { background: var(--screen-ink); color: var(--screen); }
+.screen-caption { margin: 26px 16px 0; font-size: 0.85rem; color: var(--ink-soft); text-align: right; }
+
+/* ---- layout ----------------------------------------------------------- */
+.layout {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 40px 24px 80px;
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: 56px;
+}
+nav.toc { position: sticky; top: 16px; align-self: start; font-size: 0.93rem; }
+nav.toc p { margin: 0 0 8px; font: 700 1rem var(--cond); }
+nav.toc ol { list-style: none; margin: 0; padding: 0; border-left: 2px solid var(--rule); }
+nav.toc a { display: block; padding: 3px 0 3px 12px; margin-left: -2px; border-left: 2px solid transparent; color: var(--ink-soft); text-decoration: none; }
+nav.toc a:hover { color: var(--ink); border-left-color: var(--magenta); }
+
+main { max-width: 74ch; }
+section { margin-bottom: 56px; }
+h2 {
+  margin: 0 0 14px;
+  font: 700 2rem/1.1 var(--cond);
+  padding-bottom: 8px;
+  border-bottom: 3px solid var(--ink);
+}
+h3 { margin: 30px 0 8px; font: 700 1.25rem/1.2 var(--cond); }
+p { margin: 0 0 14px; }
+ul, ol { margin: 0 0 16px; padding-left: 1.3em; }
+li { margin-bottom: 6px; }
+
+.callout {
+  margin: 18px 0;
+  padding: 12px 16px;
+  background: var(--warn-bg);
+  border-left: 5px solid var(--warn-edge);
+  border-radius: 0 6px 6px 0;
+}
+.callout p:last-child { margin: 0; }
+.tip { background: var(--panel); border-left-color: var(--screen-mid); }
+
+.table-wrap { overflow-x: auto; margin: 12px 0 18px; }
+table { border-collapse: collapse; width: 100%; font-size: 0.95rem; }
+th, td { text-align: left; vertical-align: top; padding: 8px 12px 8px 0; border-bottom: 1px solid var(--rule); }
+th { font: 700 0.95rem var(--cond); border-bottom: 2px solid var(--ink); }
+td:first-child { white-space: nowrap; }
+
+.legend { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px 20px; margin: 12px 0 18px; padding: 0; list-style: none; }
+.legend li { display: flex; align-items: center; gap: 10px; margin: 0; }
+.chip {
+  flex: none;
+  width: 3.2ch; height: 1.6em;
+  display: inline-flex; align-items: center; justify-content: center;
+  font: 600 0.9rem var(--mono);
+  color: #111; background: #fff; border: 1px solid #808080;
+}
+.chip.changed { color: var(--chip-changed); font-weight: 700; }
+.chip.frozen { background: var(--chip-frozen); }
+.chip.watched { background: var(--chip-watched); }
+.chip.brk { background: var(--chip-brk); }
+.chip.pc { background: var(--chip-pc); }
+.chip.sel { background: var(--chip-sel); color: #fff; }
+
+/* recipes are real sequences, so they get numbered steps */
+.recipe {
+  margin: 22px 0 30px;
+  padding: 18px 20px 6px;
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+}
+.recipe h3 { margin-top: 0; }
+.recipe .goal { color: var(--ink-soft); margin-top: -4px; }
+.steps { counter-reset: step; list-style: none; padding: 0; }
+.steps > li { counter-increment: step; position: relative; padding-left: 42px; margin-bottom: 12px; }
+.steps > li::before {
+  content: counter(step);
+  position: absolute; left: 0; top: 0;
+  width: 28px; height: 28px;
+  display: flex; align-items: center; justify-content: center;
+  font: 700 0.9rem var(--cond);
+  color: var(--screen);
+  background: var(--screen-ink);
+  border-radius: 50%;
+}
+
+dl.messages { margin: 0; }
+dl.messages dt { margin-top: 16px; font: 600 0.92rem var(--mono); color: var(--magenta); }
+dl.messages dd { margin: 4px 0 0; }
+
+footer { max-width: 1120px; margin: 0 auto; padding: 0 24px 48px; color: var(--ink-soft); font-size: 0.9rem; }
+
+@media (max-width: 880px) {
+  .hero-inner { grid-template-columns: 1fr; gap: 28px; }
+  .layout { grid-template-columns: minmax(0, 1fr); gap: 24px; padding-top: 28px; }
+  nav.toc { position: static; }
+  nav.toc ol { columns: 2; column-gap: 20px; border-left: 0; }
+  nav.toc a { padding-left: 0; border-left: 0; }
+  .screen { font-size: 12px; }
+}
+@media (max-width: 480px) {
+  nav.toc, nav.toc ol { min-width: 0; max-width: 100%; }
+  nav.toc ol { columns: 1; }
+}
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="hero-inner">
+    <div>
+      <h1>The gbserver memory debugger</h1>
+      <p>Look inside a running game, change its memory, find where it keeps a value, and stop it on the exact instruction you care about. This guide covers every part of the debugger and walks through real examples in Pokémon Red.</p>
+      <ol class="sequence" aria-label="Button sequence: Start, Select, Start, Select, A, B, A, B">
+        <li><span class="pill">START</span></li>
+        <li><span class="pill">SELECT</span></li>
+        <li><span class="pill">START</span></li>
+        <li><span class="pill">SELECT</span></li>
+        <li><span class="round">A</span></li>
+        <li><span class="round">B</span></li>
+        <li><span class="round">A</span></li>
+        <li><span class="round">B</span></li>
+      </ol>
+      <p class="sequence-note">Enter it within five seconds on the player page to open the debugger.</p>
+    </div>
+    <div>
+      <div class="screen" aria-label="Example memory view showing money bytes at D347">
+<div class="row dim">      00 01 02 03 04 05 06 07</div>
+<div class="row"><span class="dim">D340</span>  00 00 00 00 00 00 00 <span class="hot">01</span></div>
+<div class="row"><span class="dim">D348</span>  <span class="hot">23</span> <span class="hot">45</span> 00 00 00 00 00 00</div>
+<div class="row"><span class="dim">D350</span>  00 00 00 00 00 00 00 00</div>
+<div class="row dim">$D347 = $01  money: ₽12,345</div>
+      </div>
+      <p class="screen-caption">Pokémon Red keeps your money in three bytes starting at $D347.</p>
+    </div>
+  </div>
+</header>
+
+<div class="layout">
+  <nav class="toc" aria-label="Contents">
+    <p>Contents</p>
+    <ol>
+      <li><a href="#open">Opening it</a></li>
+      <li><a href="#window">The window</a></li>
+      <li><a href="#numbers">Typing numbers</a></li>
+      <li><a href="#memory">Memory tab</a></li>
+      <li><a href="#search">Search tab</a></li>
+      <li><a href="#breaks">Breakpoints tab</a></li>
+      <li><a href="#cpu">CPU tab</a></li>
+      <li><a href="#recipes">Recipes</a></li>
+      <li><a href="#sharing">Sharing a session</a></li>
+      <li><a href="#map">Memory map</a></li>
+      <li><a href="#messages">Messages</a></li>
+      <li><a href="#keys">Keyboard</a></li>
+    </ol>
+  </nav>
+
+  <main>
+    <section id="open">
+      <h2>Opening it</h2>
+      <p>On the player page, press <strong>Start, Select, Start, Select, A, B, A, B</strong> within five seconds. Any input works:</p>
+      <ul>
+        <li><strong>Keyboard:</strong> <kbd>Enter</kbd> or <kbd>W</kbd> for Start, <kbd>Shift</kbd> or <kbd>Q</kbd> for Select, <kbd>Z</kbd> or <kbd>A</kbd> for A, <kbd>X</kbd> or <kbd>B</kbd> for B.</li>
+        <li><strong>On-screen buttons</strong> on a phone or tablet.</li>
+        <li><strong>A gamepad.</strong></li>
+      </ul>
+      <p>A "DEBUG MODE" banner flickers and the debugger window opens. Close it with the × in its title bar or <kbd>Esc</kbd>. Entering the sequence again reopens it where you left off.</p>
+      <div class="callout">
+        <p>The buttons also reach the game, so you might pause or open a menu in-game while entering the code. Keyboard presses don't count while you're typing in a text box, such as the chat.</p>
+      </div>
+      <p>The debugger needs a ROM to be running on the <strong>pyboy</strong> engine. If a ROM is set to Boytacean, the status reads "Needs the pyboy engine"; switch it in the ROM library.</p>
+    </section>
+
+    <section id="window">
+      <h2>The window</h2>
+      <p>The debugger looks like BGB's classic grey window. On a computer you can drag it by its title bar. On a phone it fills the screen.</p>
+      <h3>Toolbar</h3>
+      <ul>
+        <li><strong>Pause / Continue</strong> stops the game between frames, or resumes it. When the game is stopped, the button reads Continue.</li>
+        <li><strong>Step frame</strong> runs exactly one frame and stops again. It only works while the game is stopped.</li>
+        <li><strong>Status</strong> shows Running, No ROM running, or why the game stopped (for example "Stopped at breakpoint 00:01B0").</li>
+      </ul>
+      <p>While the game is stopped, the title bar turns red, and the player page shows "Paused by debugger" to everyone connected.</p>
+      <p>If you aren't the controller, the toolbar says "view-only". You can still look around and search; see <a href="#sharing">Sharing a session</a>.</p>
+      <h3>Tabs</h3>
+      <ul>
+        <li><strong>Memory:</strong> view and edit bytes.</li>
+        <li><strong>Search:</strong> find where the game stores a value.</li>
+        <li><strong>Breakpoints:</strong> breakpoints, watches, and frozen values.</li>
+        <li><strong>CPU:</strong> registers and flags.</li>
+      </ul>
+    </section>
+
+    <section id="numbers">
+      <h2>Typing numbers</h2>
+      <p>Addresses and values are <strong>hexadecimal</strong> everywhere, like BGB. You can write them several ways:</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>You type</th><th>Means</th></tr></thead>
+          <tbody>
+            <tr><td><code>D347</code>, <code>$D347</code>, <code>0xD347</code>, <code>D347h</code></td><td>Hex $D347</td></tr>
+            <tr><td><code>#150</code></td><td>Decimal 150 (hex $96)</td></tr>
+            <tr><td><code>01:4A2F</code></td><td>Address $4A2F in ROM bank $01 (breakpoints only)</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>Use <code>#</code> when you're typing a number you read on the game screen, such as HP or an item count.</p>
+    </section>
+
+    <section id="memory">
+      <h2>Memory tab</h2>
+      <p>A hex view of the Game Boy's 64 KB address space, refreshed a little over twice a second. Each row shows an address, 16 bytes (8 on a phone), and the same bytes as ASCII text.</p>
+
+      <h3>Moving around</h3>
+      <ul>
+        <li>Type an address in the box at the top left and press <strong>Go</strong> or <kbd>Enter</kbd>. The byte at that address is selected.</li>
+        <li>Pick a <strong>Region</strong> to jump to the start of ROM, VRAM, cartridge RAM, work RAM, and so on. The <a href="#map">memory map</a> explains each.</li>
+        <li>Use <strong>▲ / ▼</strong> to move a page, or scroll with the mouse wheel over the grid.</li>
+        <li>With a byte selected, the arrow keys move the selection and <kbd>Page Up</kbd> / <kbd>Page Down</kbd> move a page.</li>
+      </ul>
+
+      <h3>Reading the grid</h3>
+      <ul class="legend">
+        <li><span class="chip changed">7F</span> Changed since the last refresh</li>
+        <li><span class="chip sel">7F</span> Selected byte</li>
+        <li><span class="chip frozen">7F</span> Frozen</li>
+        <li><span class="chip watched">7F</span> Watched</li>
+        <li><span class="chip brk">7F</span> Breakpoint</li>
+        <li><span class="chip pc">7F</span> Next instruction (PC), while stopped</li>
+      </ul>
+      <p>Red numbers flickering in a region show you what the game is updating right now, which is often the quickest way to spot timers, positions and animation counters.</p>
+      <p>Below the grid, the selection line shows the selected byte in hex, decimal and binary, plus the 16-bit value made from it and the next byte:</p>
+      <p><code>$D16D = $2C (44, 00101100b)   16-bit: $002C (44)</code></p>
+
+      <h3>Editing a byte</h3>
+      <ol>
+        <li>Click a byte to select it.</li>
+        <li>Type two hex digits. You can also double-click the byte, press <kbd>Enter</kbd>, or click <strong>Edit</strong> to open the editor first.</li>
+        <li>After the second digit, the value is written and the editor moves to the next byte, so you can type a run of bytes in one go.</li>
+      </ol>
+      <p>In the editor, <kbd>Enter</kbd> writes and stops, <kbd>Tab</kbd> writes and moves on, and <kbd>Esc</kbd> cancels.</p>
+
+      <h3>Writing several bytes: Poke</h3>
+      <p>Put the start address in the <strong>Poke</strong> box and the bytes next to it, separated by spaces or commas (<code>99 99 99</code>), then click <strong>Write</strong>. Up to 256 bytes at a time.</p>
+
+      <h3>Buttons under the grid</h3>
+      <ul>
+        <li><strong>Edit</strong> opens the editor on the selected byte.</li>
+        <li><strong>Freeze</strong> holds the selected byte at its current value every frame.</li>
+        <li><strong>Watch</strong> pauses the game when the selected byte changes.</li>
+        <li><strong>Break here</strong> sets a breakpoint on the selected byte. It only works in ROM.</li>
+      </ul>
+
+      <div class="callout">
+        <p><strong>What you can't edit:</strong> ROM ($0000-$7FFF) is read-only. Writing there on a real cartridge doesn't change the game; it tells the cartridge to switch memory banks, which would scramble the game. Writes to I/O registers ($FF00-$FF7F) are allowed, but they act on the hardware (sound, graphics, timers) and can have odd effects.</p>
+      </div>
+      <p>Changes take effect immediately, but the game only redraws what it shows when it next updates that part of the screen. If you change your money, open and close the menu to see the new amount.</p>
+    </section>
+
+    <section id="search">
+      <h2>Search tab</h2>
+      <p>Search finds the address where a game keeps a value, by taking a snapshot of memory and narrowing it down step by step. This is the classic cheat-finder workflow.</p>
+
+      <h3>Setting up</h3>
+      <ul>
+        <li><strong>8-bit</strong> looks at single bytes (0-255). <strong>16-bit (LE)</strong> looks at pairs of bytes, low byte first (0-65535).</li>
+        <li><strong>Regions</strong> choose where to look. Work RAM and HRAM are ticked by default and hold nearly every game variable. Add SRAM for battery-backed save data.</li>
+        <li><strong>New search</strong> takes the snapshot. Every address in the chosen regions starts as a candidate.</li>
+        <li><strong>Reset</strong> throws the search away.</li>
+      </ul>
+
+      <h3>Filtering</h3>
+      <p>Pick a condition and click <strong>Filter</strong>. Candidates that don't match are removed.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Condition</th><th>Keeps addresses whose value</th></tr></thead>
+          <tbody>
+            <tr><td>= value</td><td>equals the number you type</td></tr>
+            <tr><td>≠ value</td><td>doesn't equal it</td></tr>
+            <tr><td>&gt; value, &lt; value</td><td>is above or below it</td></tr>
+            <tr><td>changed, unchanged</td><td>differs from, or matches, its value at the previous step</td></tr>
+            <tr><td>increased, decreased</td><td>went up or down since the previous step</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>"Previous step" means the last time you clicked New search or Filter. Each filter compares against that moment, then becomes the new reference.</p>
+      <p>You don't need to pause while searching. Change the value in-game, then filter.</p>
+
+      <h3>Results</h3>
+      <p>The line above the table shows how many candidates remain. The table lists up to 100 of them:</p>
+      <ul>
+        <li><strong>Value</strong> is the current value, refreshed every second once 100 or fewer remain.</li>
+        <li><strong>Previous</strong> is the value at your last filter.</li>
+        <li>Click an address to open it in the Memory tab. Use <strong>Freeze</strong> or <strong>Watch</strong> to act on it directly.</li>
+      </ul>
+
+      <div class="callout tip">
+        <p><strong>If a search finds nothing:</strong> the game may store the number differently from how it shows it.</p>
+        <ul>
+          <li><strong>Big-endian numbers.</strong> The 16-bit option reads the low byte first. Pokémon Red stores HP and experience high byte first, so a 16-bit search misses them. Search 8-bit for the low byte instead: for HP under 256, that's the HP itself.</li>
+          <li><strong>BCD numbers.</strong> Some games store each decimal digit in half a byte. Pokémon Red does this for money: ₽3,000 is stored as the bytes <code>00 30 00</code>. To search for it, type the digits as hex, with no <code>#</code>: search <code>= 30</code>.</li>
+          <li><strong>Off-by-one values.</strong> A game may store "lives: 3" as 2, or a level as level − 1.</li>
+        </ul>
+      </div>
+    </section>
+
+    <section id="breaks">
+      <h2>Breakpoints tab</h2>
+      <p>This tab holds the three ways to react to what the game does: breakpoints, watches, and frozen values. Each section has an add row and a list, with a way to remove each entry.</p>
+
+      <h3>Execution breakpoints</h3>
+      <p>A breakpoint stops the game on the exact instruction at an address, before it runs, even in the middle of a frame. While stopped, memory and registers show the exact state at that moment.</p>
+      <p>Type an address and click <strong>Add</strong>:</p>
+      <ul>
+        <li><code>0150</code> for addresses in $0000-$3FFF, which are always bank 00.</li>
+        <li><code>4A2F</code> for addresses in $4000-$7FFF. The debugger works out which ROM bank you mean by matching the bytes currently there. If the same bytes appear in several banks, it asks you to write the bank yourself.</li>
+        <li><code>01:4A2F</code> to give the bank explicitly.</li>
+        <li>A <strong>label name</strong> such as <code>DisplayTextID</code>, if a symbol file is installed (below).</li>
+      </ul>
+      <p>When a breakpoint hits:</p>
+      <ul>
+        <li>The title bar turns red and the status shows the breakpoint.</li>
+        <li>The memory view scrolls to it, with the PC byte in green.</li>
+        <li><strong>Continue</strong> resumes. The breakpoint stays set, so it stops again the next time that code runs.</li>
+        <li><strong>Step frame</strong> finishes the current frame and stops at its end.</li>
+      </ul>
+      <p>Each breakpoint shows its hit count. A breakpoint added while the game is stopped at another breakpoint says "applying…" until the game moves on to the next frame. <strong>Clear all</strong> removes every breakpoint.</p>
+
+      <div class="callout">
+        <p><strong>Breakpoints only go on ROM code ($0000-$7FFF).</strong> A breakpoint works by temporarily swapping a marker byte into memory. In ROM that's invisible, but in RAM it would overwrite a game value. To catch a RAM value changing, use a watch instead.</p>
+      </div>
+
+      <h3>Using label names (.sym files)</h3>
+      <p>If you build a ROM from a disassembly such as pret/pokered, the build also writes a <code>.sym</code> file listing every label and its address. With it installed, you can set breakpoints by name.</p>
+      <ol>
+        <li>Name the symbol file after the ROM: <code>pokered.gbc</code> needs <code>pokered.sym</code>.</li>
+        <li>Copy it into the server's <code>roms</code> folder. The upload button only accepts ROMs, so use <code>scp pokered.sym luna@cm-pi:~/gbserver/roms/</code>.</li>
+        <li>Stop the ROM and start it again. Symbols are read when a ROM starts.</li>
+      </ol>
+      <p>The <code>.sym</code> file is plain text, so you can also search it for data addresses. A line such as <code>00:d347 wPlayerMoney</code> tells you where to point the Memory tab.</p>
+
+      <h3>Watches</h3>
+      <p>A watch pauses the game when a value does something. Give it an address, a size, and a condition:</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Condition</th><th>Pauses when the value</th></tr></thead>
+          <tbody>
+            <tr><td>changes</td><td>is different from last frame</td></tr>
+            <tr><td>becomes =</td><td>becomes the number you give</td></tr>
+            <tr><td>leaves =</td><td>was that number and no longer is</td></tr>
+            <tr><td>goes &gt;, goes &lt;</td><td>crosses above or below the number</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>Watches fire once when the condition starts being true, not every frame while it stays true, so Continue doesn't immediately stop again.</p>
+      <p>Watches are checked at the end of every frame. The status shows the old and new values, for example <code>Watch $D348 changed $30 → $28</code>. The PC it shows is where the CPU was at the end of that frame, not necessarily the instruction that wrote the value. To find that instruction, see <a href="#recipe-code">the last recipe</a>.</p>
+      <p>The list shows each watch's current value and how many times it has fired.</p>
+
+      <h3>Frozen values</h3>
+      <p>A freeze rewrites a value every frame, so the game can't change it for long. Enter an address, a value and a size, then click <strong>Freeze</strong>. <strong>Unfreeze</strong> releases it.</p>
+      <p>If you edit a frozen 8-bit byte in the Memory tab, the freeze keeps your new value.</p>
+      <p>Limits: 32 breakpoints, 16 watches and 64 frozen addresses at a time.</p>
+    </section>
+
+    <section id="cpu">
+      <h2>CPU tab</h2>
+      <p>Shows the Game Boy CPU's registers: <strong>A, F, B, C, D, E</strong> (8-bit), and <strong>HL, SP, PC</strong> (16-bit). Below them, the flags from register F light up when set: <strong>Z</strong> zero, <strong>N</strong> subtract, <strong>H</strong> half-carry, <strong>C</strong> carry.</p>
+      <ul>
+        <li>While stopped, the values are exact. While running, they're a snapshot taken between frames.</li>
+        <li>Click a register to change it. Changing PC makes the CPU continue from a different address, which can easily crash the game; save first.</li>
+        <li><strong>View PC in memory</strong> opens the Memory tab at the next instruction. <strong>View stack</strong> opens it at SP.</li>
+      </ul>
+    </section>
+
+    <section id="recipes">
+      <h2>Recipes</h2>
+      <p>These use the original Pokémon Red. A ROM hack can move things around, so if an address doesn't match, find it with Search or look it up in your <code>.sym</code> file.</p>
+      <div class="callout tip">
+        <p>Before experimenting, make a save state (Save now in settings) so you can go back if a change breaks something.</p>
+      </div>
+
+      <div class="recipe" id="recipe-money">
+        <h3>Set your money</h3>
+        <p class="goal">Money is three BCD bytes at $D347: ₽123,456 is stored as <code>12 34 56</code>.</p>
+        <ol class="steps">
+          <li>In the Memory tab, type <code>D347</code> and press Go.</li>
+          <li>In the <strong>Poke</strong> row, enter <code>D347</code> as the address and <code>99 99 99</code> as the bytes, then click <strong>Write</strong>. (Typing <code>99</code> three times on the selected byte works too.)</li>
+          <li>Open and close the in-game menu. Your money now reads ₽999,999.</li>
+        </ol>
+        <p>Every half of each byte must be a digit 0-9. <code>00 50 00</code> is ₽5,000; <code>00 5A 00</code> is not a valid amount.</p>
+      </div>
+
+      <div class="recipe" id="recipe-hp">
+        <h3>Find a number you can see: HP</h3>
+        <p class="goal">Find where your Pokémon's HP lives, using its value on screen.</p>
+        <ol class="steps">
+          <li>Start a battle. Note your Pokémon's HP, for example 44.</li>
+          <li>In the Search tab, keep 8-bit with WRAM and HRAM, and click New search.</li>
+          <li>Choose "= value", type <code>#44</code>, and click Filter.</li>
+          <li>Take a hit. If HP is now 37, filter "= value" with <code>#37</code>.</li>
+          <li>Repeat until a handful of candidates remain.</li>
+        </ol>
+        <p>Expect about two results. The game keeps one copy of HP in the party data ($D16C-$D16D for the first Pokémon, high byte first) and a separate copy for the Pokémon currently battling.</p>
+      </div>
+
+      <div class="recipe" id="recipe-unknown">
+        <h3>Find a number you can't see: position</h3>
+        <p class="goal">The game never shows your coordinates, but you can still find them by how they change.</p>
+        <ol class="steps">
+          <li>Stand outside in a town. Click New search.</li>
+          <li>Walk one step right. Filter "increased".</li>
+          <li>Walk one step right again. Filter "increased".</li>
+          <li>Don't move. Filter "unchanged".</li>
+          <li>Walk one step left. Filter "decreased".</li>
+          <li>Repeat until one or two addresses remain. Walk around and watch their Value column follow you.</li>
+        </ol>
+        <p>The same approach finds anything that moves in one direction: a step counter, a timer, the number of an item you use.</p>
+      </div>
+
+      <div class="recipe" id="recipe-freeze">
+        <h3>Infinite HP</h3>
+        <p class="goal">Stop the battling Pokémon from losing HP.</p>
+        <ol class="steps">
+          <li>Find the HP addresses with the HP recipe.</li>
+          <li>Click Freeze next to each result.</li>
+          <li>Take a hit. The HP bar may flicker, but the value comes straight back.</li>
+          <li>Unfreeze them in the Breakpoints tab when you're done.</li>
+        </ol>
+        <p>Freezing only holds a value; it doesn't change the game's logic. Some effects, such as fainting checks that run within the same frame as damage, can still happen.</p>
+      </div>
+
+      <div class="recipe" id="recipe-watch">
+        <h3>Stop when something changes</h3>
+        <p class="goal">Pause the game the moment your money changes.</p>
+        <ol class="steps">
+          <li>In the Breakpoints tab, under Watches, enter <code>D348</code>, keep 8-bit, and choose "changes". Click Add.</li>
+          <li>Buy something in a shop.</li>
+          <li>The game pauses and the status shows the old and new values.</li>
+          <li>Click Continue.</li>
+        </ol>
+        <p>$D348 holds the hundreds and thousands digits. Shop prices end in 00, so the last byte ($D349) usually doesn't change when you buy something, but $D348 does.</p>
+      </div>
+
+      <div class="recipe" id="recipe-code">
+        <h3>Stop on a specific piece of code</h3>
+        <p class="goal">Freeze the game on the exact instruction that starts a conversation.</p>
+        <ol class="steps">
+          <li>Install your ROM's <code>.sym</code> file and restart the ROM (see <a href="#breaks">Using label names</a>).</li>
+          <li>In the Breakpoints tab, type <code>DisplayTextID</code> and click Add.</li>
+          <li>Talk to anyone in the game.</li>
+          <li>The game stops before the text box appears. Open the CPU tab to see the registers at that instant, or click <strong>View stack</strong> to see where it was called from (the top two bytes are the return address, low byte first).</li>
+          <li>Click Continue to let the conversation run, then Remove the breakpoint.</li>
+        </ol>
+        <p>If your hack renamed this routine, search the <code>.sym</code> file for another label with an address below 8000.</p>
+      </div>
+    </section>
+
+    <section id="sharing">
+      <h2>Sharing a session</h2>
+      <p>Everyone in a session sees the same game, so the debugger follows the session's control rules.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th></th><th>Controller</th><th>Viewers</th></tr></thead>
+          <tbody>
+            <tr><td>View memory and registers</td><td>Yes</td><td>Yes</td></tr>
+            <tr><td>Search</td><td>Yes</td><td>Yes, their own search</td></tr>
+            <tr><td>Edit memory and registers</td><td>Yes</td><td>No</td></tr>
+            <tr><td>Breakpoints, watches, freezes</td><td>Yes</td><td>No</td></tr>
+            <tr><td>Pause, continue, step</td><td>Yes</td><td>No</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>Everything the controller sets up is cleared, and the game resumes, when:</p>
+      <ul>
+        <li>control passes to someone else, including when the controller disconnects;</li>
+        <li>a ROM is loaded, stopped or reset.</li>
+      </ul>
+      <p>This means nobody inherits a paused game or a stray freeze from someone else. Stopping the ROM or loading another one works even while the game is stopped at a breakpoint.</p>
+      <p>Save states are written with breakpoints removed, so a save made while debugging is always clean.</p>
+      <p>Pausing freezes the game for every viewer. In a private room that's just you; in the shared game, everyone watching sees it.</p>
+    </section>
+
+    <section id="map">
+      <h2>Memory map</h2>
+      <p>The Game Boy's 16-bit address space, as it appears in the Memory tab.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Range</th><th>Region list</th><th>What's there</th></tr></thead>
+          <tbody>
+            <tr><td class="mono">$0000-$3FFF</td><td>ROM0</td><td>ROM bank 00: startup code and routines the game always needs.</td></tr>
+            <tr><td class="mono">$4000-$7FFF</td><td>ROMX</td><td>Switchable ROM bank. Which bank shows here changes as the game runs.</td></tr>
+            <tr><td class="mono">$8000-$9FFF</td><td>VRAM</td><td>Video memory: tile graphics and background layouts.</td></tr>
+            <tr><td class="mono">$A000-$BFFF</td><td>SRAM</td><td>Cartridge RAM, usually battery-backed save data. Reads $FF when the game has it switched off.</td></tr>
+            <tr><td class="mono">$C000-$DFFF</td><td>WRAM</td><td>Work RAM. Nearly every game variable lives here.</td></tr>
+            <tr><td class="mono">$E000-$FDFF</td><td>ECHO</td><td>A mirror of $C000-$DDFF. Games don't use it; look at WRAM instead.</td></tr>
+            <tr><td class="mono">$FE00-$FE9F</td><td>OAM</td><td>Sprite table: position, tile and flags for 40 sprites.</td></tr>
+            <tr><td class="mono">$FF00-$FF7F</td><td>I/O</td><td>Hardware registers: joypad, sound, LCD, timers.</td></tr>
+            <tr><td class="mono">$FF80-$FFFE</td><td>HRAM</td><td>Small fast RAM some games use for frequently changed values.</td></tr>
+            <tr><td class="mono">$FFFF</td><td></td><td>Interrupt enable register.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="messages">
+      <h2>Messages</h2>
+      <dl class="messages">
+        <dt>Only the current controller can edit memory</dt>
+        <dd>You're a viewer. Use Request control on the player page, or ask the controller to hand it over.</dd>
+
+        <dt>ROM ($0000-$7FFF) is read-only</dt>
+        <dd>You tried to edit, poke or freeze ROM. Only RAM can be changed.</dd>
+
+        <dt>Breakpoints go on ROM code ($0000-$7FFF) only</dt>
+        <dd>You tried to set a breakpoint in RAM. Use a watch to catch RAM changes.</dd>
+
+        <dt>$4A2F looks identical in 3 ROM banks - enter it as BB:4A2F</dt>
+        <dd>The bytes at that address match more than one bank, so write the bank you mean, such as <code>02:4A2F</code>. Label names from a <code>.sym</code> file avoid this entirely.</dd>
+
+        <dt>Unknown symbol "…" (no .sym file next to this ROM?)</dt>
+        <dd>Check the label's spelling, that the <code>.sym</code> file has the same name as the ROM, and that you restarted the ROM after copying it.</dd>
+
+        <dt>$C0A3 has a breakpoint on it - remove it before editing</dt>
+        <dd>Remove the breakpoint at that address first.</dd>
+
+        <dt>No ROM running / Needs the pyboy engine</dt>
+        <dd>Start a ROM, or switch the ROM's engine to pyboy in the ROM library.</dd>
+
+        <dt>Start a new search first</dt>
+        <dd>Click New search before filtering. A search is also cleared if you reconnect.</dd>
+
+        <dt>Debugger state was reset (ROM changed or control moved)</dt>
+        <dd>See <a href="#sharing">Sharing a session</a>. Set up your breakpoints and freezes again.</dd>
+
+        <dt>The debugger is disabled on this server</dt>
+        <dd>The server owner has set <code>GBSERVER_DEBUGGER</code> to <code>off</code>, or to <code>internal</code> and you're connecting through the public address.</dd>
+
+        <dt>Too many requests - try again in a moment</dt>
+        <dd>The server limits how fast the debugger can send requests. Wait a second.</dd>
+      </dl>
+    </section>
+
+    <section id="keys">
+      <h2>Keyboard</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Keys</th><th>Where</th><th>Does</th></tr></thead>
+          <tbody>
+            <tr><td><kbd>Esc</kbd></td><td>Debugger</td><td>Close the window, or cancel an edit</td></tr>
+            <tr><td><kbd>←</kbd> <kbd>→</kbd> <kbd>↑</kbd> <kbd>↓</kbd></td><td>Memory grid</td><td>Move the selection</td></tr>
+            <tr><td><kbd>Page Up</kbd> <kbd>Page Down</kbd></td><td>Memory grid</td><td>Move a page</td></tr>
+            <tr><td><kbd>0</kbd>-<kbd>9</kbd> <kbd>A</kbd>-<kbd>F</kbd></td><td>Memory grid</td><td>Start editing the selected byte</td></tr>
+            <tr><td><kbd>Enter</kbd></td><td>Memory grid</td><td>Edit the selected byte</td></tr>
+            <tr><td><kbd>Enter</kbd></td><td>Byte editor</td><td>Write and stop</td></tr>
+            <tr><td><kbd>Tab</kbd></td><td>Byte editor</td><td>Write and move to the next byte</td></tr>
+            <tr><td><kbd>Enter</kbd></td><td>Go, Poke, search value, breakpoint boxes</td><td>Same as the button beside it</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>While the memory grid or a debugger text box has focus, keys go to the debugger rather than the game.</p>
+    </section>
+  </main>
+</div>
+
+<footer>
+  <p>For the server side (turning the debugger on or off, deployment), see <code>docs/DEBUGGER.md</code> and <code>README.md</code> in the gbserver repository.</p>
+</footer>
+
+</body>
+</html>

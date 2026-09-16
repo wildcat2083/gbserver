@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 roms/
 saves/
 dist/
@@ -12,3 +13,30 @@ __pycache__/
 *.log
 blocked_ips.json
 build_venv/
+=======
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# Runtime state - lives on the server, never in git
+blocked_ips.json
+offline.flag
+roms/*
+!roms/place-roms-here
+saves/**
+!saves/placeholder-for-saves
+!saves/rooms/
+!saves/rooms/placeholder-for-rooms
+*.uploading
+
+# Secrets / certs
+*.env
+!deploy/systemd/gbserver.env.example
+deploy/nginx/certs/*
+!deploy/nginx/certs/Place Certs and keys here.txt
+*.key
+*.pem
+*.crt
+>>>>>>> main
