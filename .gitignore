@@ -1,24 +1,20 @@
-<<<<<<< HEAD
-roms/
-saves/
-dist/
-build/
-windows/Output/
-__pycache__/
-*.pyc
-*.pyo
-*.zip
-*.tar.gz
-.env
-*.log
-blocked_ips.json
-build_venv/
-=======
 # Python
 __pycache__/
 *.pyc
+*.pyo
 venv/
 .venv/
+build_venv/
+
+# Build output (auto-updating Windows runtime)
+dist/
+build/
+windows/Output/
+
+# Bundles / logs
+*.zip
+*.tar.gz
+*.log
 
 # Runtime state - lives on the server, never in git
 blocked_ips.json
@@ -39,4 +35,3 @@ deploy/nginx/certs/*
 *.key
 *.pem
 *.crt
->>>>>>> main
