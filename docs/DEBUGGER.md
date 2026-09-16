@@ -38,11 +38,16 @@ opened in the memory view, frozen, or watched.
 
 - **Execution breakpoints** stop on the exact instruction, mid-frame. Enter
   `0150`, `01:4A2F` (bank:address), or a label if a `.sym` file sits next to
-  the ROM. For $4000-$7FFF the bank is detected when unambiguous. Supported in
-  $0000-$DFFF (PyBoy can't hook HRAM/OAM/I/O).
+  the ROM. For $4000-$7FFF the bank is detected when unambiguous. ROM code
+  ($0000-$7FFF) only - a breakpoint works by writing a marker byte, which in
+  RAM would overwrite game data. Use a watch for RAM.
 - **Watches** pause at the end of the frame in which an address changes, or
   crosses a value.
 - **Freezes** rewrite a value every frame.
+
+Breakpoints can't go on an instruction that jumps to itself (`jr @`, `jp @`,
+or a conditional version) - PyBoy can't step past them - so the debugger
+refuses those; break on the instruction before the loop instead.
 
 While stopped, the memory view and CPU tab show exact state. **Continue**
 resumes; **Step frame** runs one frame and stops again.

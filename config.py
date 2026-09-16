@@ -48,7 +48,10 @@ ROOM_SAVES_DIR.mkdir(parents=True, exist_ok=True)
 OFFLINE_FLAG_PATH = BASE_DIR / "offline.flag"
 
 
-ENGINE_OVERRIDES_PATH = ROMS_DIR / "_engine_overrides.json"
+# roms/ holds only ROMs (and optional .sym debug symbols next to them).
+# Everything the server writes lives under saves/.
+ENGINE_OVERRIDES_PATH = SAVES_DIR / "_engine_overrides.json"
+MIGRATED_FROM_ROMS_DIR = SAVES_DIR / "_from_roms"
 _engine_overrides_lock = threading.Lock()
 
 
@@ -131,3 +134,68 @@ def debugger_allowed_for_host(host):
     else:
         host = host.rsplit(":", 1)[0] if host.count(":") == 1 else host
     return host in INTERNAL_HOSTS
+
+
+def rom_symbols_path(rom_path):
+    """The .sym file for a ROM, if one sits beside it (name.sym or name.gb.sym)."""
+    rom_path = Path(rom_path)
+    for candidate in (rom_path.with_suffix(".sym"), rom_path.with_name(rom_path.name + ".sym")):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def migrate_roms_folder():
+    """Move anything the server (or PyBoy) left in roms/ over to saves/.
+
+    - Save states (name.state, or PyBoy's hotkey-style name.gb.state) move to
+      saves/name.state, where the server loads them - unless saves/ already has
+      one for that ROM, in which case the old copy goes to saves/_from_roms/.
+    - Engine overrides move to saves/_engine_overrides.json.
+    - Battery RAM / RTC / .sav files and anything else that isn't a ROM or a
+      .sym go to saves/_from_roms/ for safekeeping (the server doesn't read them).
+    Nothing is ever overwritten or deleted. Returns a list of (src, dst) moves.
+    """
+    moves = []
+
+    def park(src, dst):
+        if dst.exists():
+            MIGRATED_FROM_ROMS_DIR.mkdir(parents=True, exist_ok=True)
+            dst = MIGRATED_FROM_ROMS_DIR / src.name
+            n = 1
+            while dst.exists():
+                dst = MIGRATED_FROM_ROMS_DIR / f"{src.stem}.{n}{src.suffix}"
+                n += 1
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        src.rename(dst)
+        moves.append((src, dst))
+
+    try:
+        entries = [p for p in ROMS_DIR.iterdir() if p.is_file()]
+    except OSError:
+        return moves
+
+    for p in entries:
+        name = p.name
+        lower = name.lower()
+        if lower.endswith((".gb", ".gbc", ".sym")) or name.startswith("place-roms-here"):
+            continue
+        try:
+            if name == "_engine_overrides.json":
+                park(p, ENGINE_OVERRIDES_PATH)
+            elif lower.endswith(".state"):
+                stem = name[: -len(".state")]
+                if stem.lower().endswith((".gb", ".gbc")):
+                    stem = Path(stem).stem
+                park(p, SAVES_DIR / f"{stem}.state")
+            elif lower.endswith((".uploading",)):
+                continue
+            else:
+                MIGRATED_FROM_ROMS_DIR.mkdir(parents=True, exist_ok=True)
+                park(p, MIGRATED_FROM_ROMS_DIR / name)
+        except OSError as e:
+            print(f"[warn] couldn't move {p} out of roms/: {e}")
+
+    for src, dst in moves:
+        print(f"[info] moved {src.name} from roms/ to {dst.relative_to(BASE_DIR)}")
+    return moves

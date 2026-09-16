@@ -185,6 +185,19 @@ set breakpoints, or pause. Everything resets when control changes hands.
 Set `GBSERVER_DEBUGGER=internal` in `/etc/gbserver.env` to limit it to the
 LAN hostname, or `off` to disable it.
 
+## Where files live
+
+- `roms/` holds only ROMs (`.gb`, `.gbc`), plus an optional `.sym` symbol file
+  next to a ROM for the debugger. The server never writes anything here.
+- `saves/` holds everything the server writes: save states (`<rom>.state`),
+  per-ROM engine choices (`_engine_overrides.json`), and private rooms'
+  saves under `saves/rooms/<code>/`.
+- On startup, anything older versions (or PyBoy itself) left in `roms/` is
+  moved out automatically: save states go to `saves/`, and battery `.ram`,
+  `.rtc` and `.sav` files go to `saves/_from_roms/`. Nothing is overwritten -
+  if `saves/` already has a state for that ROM, the old one goes to
+  `saves/_from_roms/` too. The log lists each file it moved.
+
 ## Notes
 
 - Runs on anything with Python 3.

@@ -21,6 +21,8 @@ from config import (
     MSG_VIDEO,
     NO_INPUT_TIMEOUT_SECONDS,
     ROMS_DIR,
+    ROOM_SAVES_DIR,
+    SAVES_DIR,
     SOUND_SAMPLE_RATE,
     SOUND_VOLUME,
     safe_rom_name,
@@ -226,15 +228,33 @@ class Emulator:
             p.name for p in list(ROMS_DIR.glob("*.gb")) + list(ROMS_DIR.glob("*.gbc"))
         )
 
+    @staticmethod
+    def save_locations_index():
+        """Map ROM stem -> where a .state exists: "shared" and/or room codes.
+
+        Scans saves/*.state and saves/rooms/<code>/*.state once, so the
+        library listing stays cheap even with hundreds of ROMs.
+        """
+        index = {}
+        for p in SAVES_DIR.glob("*.state"):
+            index.setdefault(p.stem, []).append("shared")
+        for p in sorted(ROOM_SAVES_DIR.glob("*/*.state")):
+            index.setdefault(p.stem, []).append(p.parent.name)
+        return index
+
     def rom_library_info(self):
         info = []
+        locations = self.save_locations_index()
         for name in self.list_roms():
             p = ROMS_DIR / name
             save_path = self.saves_dir / (p.stem + ".state")
             info.append({
                 "filename": name,
                 "size_bytes": p.stat().st_size,
+                # has_save: this session's own save (drives Resume on the player page)
                 "has_save": save_path.exists(),
+                # save_locations: every save for this ROM - shared and any room
+                "save_locations": locations.get(p.stem, []),
                 "engine": get_engine_for_rom(name),
             })
         return info

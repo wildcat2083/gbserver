@@ -279,6 +279,28 @@ class DebugCore:
             f"(e.g. {matches[0]:02X}:{addr:04X})"
         )
 
+    def _jumps_to_itself(self, bank, addr):
+        """True for `jr @`, `jr cc,@`, `jp @`, `jp cc,@` - tight self-loops.
+
+        PyBoy's breakpoint stepping never lets a frame finish on these, so a
+        breakpoint there would wedge the emulator the first time it needs to
+        run past it (e.g. to stop or load a ROM while held).
+        """
+        try:
+            if 0x4000 <= addr < 0x8000:
+                code = self.pyboy.memory[bank, addr:addr + 3]
+            else:
+                code = self.pyboy.memory[addr:min(addr + 3, 0x10000)]
+        except Exception:
+            return False
+        code = list(code) + [0, 0, 0]
+        op = code[0]
+        if op in (0x18, 0x20, 0x28, 0x30, 0x38) and code[1] == 0xFE:
+            return True
+        if op in (0xC3, 0xC2, 0xCA, 0xD2, 0xDA) and (code[1] | (code[2] << 8)) == addr:
+            return True
+        return False
+
     # ---- state --------------------------------------------------------------
 
     def registers(self):
@@ -408,13 +430,21 @@ class DebugCore:
                 except Exception:
                     raise ValueError(f'Unknown symbol "{symbol}" (no .sym file next to this ROM?)')
             addr = _int(addr, "addr", 0, 0xFFFF)
-            if addr >= 0xE000:
-                raise ValueError("PyBoy can only break on code in $0000-$DFFF (not echo RAM, OAM, I/O or HRAM)")
+            if addr >= 0x8000:
+                raise ValueError(
+                    "Breakpoints go on ROM code ($0000-$7FFF) only - in RAM they'd overwrite "
+                    "game data. To catch a value changing, use a watch instead."
+                )
             if bank is None:
                 bank = self._guess_rom_bank(addr) if 0x4000 <= addr < 0x8000 else 0
             bank = _int(bank, "bank", 0, 0x1FF)
             if addr < 0x4000 and bank != 0:
                 raise ValueError("$0000-$3FFF is always bank 00")
+            if self._jumps_to_itself(bank, addr):
+                raise ValueError(
+                    f"{bank:02X}:{addr:04X} is a jump to itself - PyBoy can't step past a breakpoint "
+                    "there. Put it on the instruction before the loop, or use Pause instead."
+                )
             key = (bank, addr)
             if key in self.bps:
                 raise ValueError(f"breakpoint {bank:02X}:{addr:04X} already exists")

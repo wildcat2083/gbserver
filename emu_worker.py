@@ -21,6 +21,7 @@ def run_worker(cmd_queue, out_queue, roms_dir, saves_dir, sound_sample_rate,
 
     from pyboy import PyBoy
     from debug_core import DebugCore
+    from config import rom_symbols_path
     try:
         from boytacean.pyboy import PyBoyV2 as Boytacean
         boytacean_available = True
@@ -57,6 +58,25 @@ def run_worker(cmd_queue, out_queue, roms_dir, saves_dir, sound_sample_rate,
 
     frame_no = 0
     autosave_every = 60 * 60 * autosave_interval_minutes
+
+    def make_pyboy(rom_file, **kwargs):
+        """Create PyBoy from the ROM's bytes rather than its path.
+
+        Given a path, PyBoy reads and writes name.gb.ram / .rtc / .state files
+        beside the ROM on its own. Given bytes, it never touches roms/ - all
+        persistence stays in saves/ and is handled by this worker.
+        """
+        rom_file = Path(rom_file)
+        symbols = rom_symbols_path(rom_file)
+        return PyBoy(
+            io.BytesIO(rom_file.read_bytes()),
+            window="null",
+            sound_emulated=True,
+            sound_sample_rate=sound_sample_rate,
+            sound_volume=sound_volume,
+            symbols=str(symbols) if symbols else None,
+            **kwargs,
+        )
 
     def send_status():
         nonlocal last_status_sent
@@ -141,16 +161,10 @@ def run_worker(cmd_queue, out_queue, roms_dir, saves_dir, sound_sample_rate,
             )
             engine_name = "boytacean"
         else:
-            pyboy_kwargs = dict(
-                window="null",
-                sound_emulated=True,
-                sound_sample_rate=sound_sample_rate,
-                sound_volume=sound_volume,
-            )
+            extra = {}
             if ram_bytes is not None:
-
-                pyboy_kwargs["ram_file"] = io.BytesIO(ram_bytes)
-            new_pyboy = PyBoy(str(candidate), **pyboy_kwargs)
+                extra["ram_file"] = io.BytesIO(ram_bytes)
+            new_pyboy = make_pyboy(candidate, **extra)
             engine_name = "pyboy"
 
         new_pyboy.set_emulation_speed(0)
@@ -204,17 +218,12 @@ def run_worker(cmd_queue, out_queue, roms_dir, saves_dir, sound_sample_rate,
         snapshot.seek(0)
 
         ram_buf = io.BytesIO()
-        pyboy.stop(ram_file=ram_buf)
+        # Explicit buffers: PyBoy would otherwise write name.gb.rtc beside the ROM
+        pyboy.stop(ram_file=ram_buf, rtc_file=io.BytesIO())
         ram_buf.seek(0)
         sav_bytes = ram_buf.read()
 
-        new_pyboy = PyBoy(
-            str(rom_path),
-            window="null",
-            sound_emulated=True,
-            sound_sample_rate=sound_sample_rate,
-            sound_volume=sound_volume,
-        )
+        new_pyboy = make_pyboy(rom_path)
         new_pyboy.load_state(snapshot)
         new_pyboy.set_emulation_speed(0)
         pyboy = new_pyboy

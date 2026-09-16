@@ -138,6 +138,7 @@
       font-size: 0.85rem;
       margin-bottom: 20px;
     }
+      .save-where { margin-left: 6px; font-size: 0.85em; opacity: 0.75; white-space: nowrap; }
   </style>
 </head>
 <body>
@@ -241,6 +242,17 @@
     let adminToken = null;
     let isAdmin = false;
     let isOffline = false;
+
+    function escapeHtml(value) {
+      return String(value).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    }
+
+    function saveLocationsCell(locations) {
+      if (!locations || locations.length === 0) return pill(false, "yes", "no");
+      const labels = locations.map((loc) => (loc === "shared" ? "shared" : `room ${loc}`));
+      const title = escapeHtml(`Save found in: ${labels.join(", ")}`);
+      return `<span class="pill on" title="${title}">yes</span> <span class="save-where">${escapeHtml(labels.join(", "))}</span>`;
+    }
 
     function pill(on, textOn, textOff) {
       return `<span class="pill ${on ? "on" : "off"}">${on ? textOn : textOff}</span>`;
@@ -649,12 +661,12 @@
       table.hidden = false;
       document.getElementById("romLibraryBody").innerHTML = matches.map((r) => `
         <tr>
-          <td><input type="checkbox" class="rom-select-checkbox" data-filename="${r.filename}" ${romSelectedFilenames.has(r.filename) ? "checked" : ""} /></td>
-          <td>${r.filename}</td>
+          <td><input type="checkbox" class="rom-select-checkbox" data-filename="${escapeHtml(r.filename)}" ${romSelectedFilenames.has(r.filename) ? "checked" : ""} /></td>
+          <td>${escapeHtml(r.filename)}</td>
           <td>${(r.size_bytes / 1024 / 1024).toFixed(1)} MB</td>
-          <td>${pill(r.has_save, "yes", "no")}</td>
-          <td>${r.engine}</td>
-          <td><button class="kick-btn" data-filename="${r.filename}">Delete</button></td>
+          <td>${saveLocationsCell(r.save_locations)}</td>
+          <td>${escapeHtml(r.engine)}</td>
+          <td><button class="kick-btn" data-filename="${escapeHtml(r.filename)}">Delete</button></td>
         </tr>
       `).join("");
 

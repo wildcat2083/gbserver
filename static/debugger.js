@@ -323,6 +323,7 @@
     }
     function breakSelected() {
       if (selected === null) return;
+      if (selected >= 0x8000) return flash("Breakpoints go on ROM code ($0000-$7FFF). For RAM, use Watch.");
       call({ op: "bp_add", addr: selected }).then((r) => r && r.ok && flash(`Breakpoint at ${hex(r.result.bank, 2)}:${hex(r.result.addr, 4)}`, true));
     }
 
@@ -428,7 +429,7 @@
       el("div", { class: "gbd-row" }, freezeAddr, freezeValue, freezeSize,
         el("button", { class: "gbd-btn gbd-primary", type: "button", onclick: addFreeze }, "Freeze")),
       freezeList,
-      el("p", { class: "gbd-hint", text: "Execution breakpoints stop on the exact instruction. For $4000-$7FFF the ROM bank is detected automatically when it's unambiguous; otherwise enter BB:AAAA. Everything here is cleared when control changes hands or a ROM loads." }),
+      el("p", { class: "gbd-hint", text: "Execution breakpoints stop on the exact instruction and go on ROM code ($0000-$7FFF). For $4000-$7FFF the ROM bank is detected automatically when it's unambiguous; otherwise enter BB:AAAA. To catch a RAM value changing, use a watch. Everything here is cleared when control changes hands or a ROM loads." }),
     );
 
     async function addBreakpoint() {
