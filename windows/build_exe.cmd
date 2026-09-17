@@ -93,3 +93,4 @@ echo  Done!  dist\gbserver\gbserver.exe
 echo  Build the installer with:  windows\build_installer.cmd
 echo ============================================================
 endlocal
+exit /b 0
