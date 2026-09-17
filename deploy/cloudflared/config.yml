@@ -1,0 +1,17 @@
+# /etc/cloudflared/config.yml - Cloudflare Tunnel for gbserver
+#
+# Publishes gbserver.wulfpax-labs.com through an outbound connection from
+# this machine to Cloudflare, so the router needs no port forwarding.
+# Replace TUNNEL_ID with the ID printed by `cloudflared tunnel create gbserver`.
+
+tunnel: TUNNEL_ID
+credentials-file: /etc/cloudflared/TUNNEL_ID.json
+
+ingress:
+  # Hand public traffic to nginx's loopback-only public block, which
+  # applies the public restrictions (no uploads/deletes, no dashboard)
+  # and restores the visitor's real IP before proxying to gunicorn.
+  - hostname: gbserver.wulfpax-labs.com
+    service: http://127.0.0.1:8081
+  # Anything else that reaches this tunnel gets a 404.
+  - service: http_status:404

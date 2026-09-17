@@ -103,9 +103,9 @@ Edit the username and cert paths in it first if yours differ.
 
 The nginx config serves two hostnames with two certificates via SNI:
 
-- `gbserver.wulfpax-labs.com` - internet-facing, Let's Encrypt cert.
-  The admin dashboard and admin API return 404, and adding or deleting
-  ROMs returns 403.
+- `gbserver.wulfpax-labs.com` - internet-facing, served through a Cloudflare
+  Tunnel (see below). The admin dashboard and admin API return 404, and
+  adding or deleting ROMs returns 403.
 - `gbserver-internal.wulfpax-labs.com` - LAN-only, internal CA cert,
   everything available.
 
@@ -123,10 +123,43 @@ sudo nginx -t
 sudo systemctl reload nginx
 ```
 
-Both certificates must already exist at the paths the config references.
-Let's Encrypt certs expire every 90 days - confirm certbot's renewal timer
-is enabled (`systemctl list-timers | grep certbot`). Plain HTTP on port
-80 only serves ACME challenges and redirects everything else to HTTPS.
+The internal CA certificate must already exist at the path the config
+references. The public hostname needs no certificate on the Pi - Cloudflare
+handles TLS for visitors.
+
+### Public access without port forwarding (Cloudflare Tunnel)
+
+`gbserver.wulfpax-labs.com` is published through a Cloudflare Tunnel:
+`cloudflared` on the Pi keeps an outbound connection to Cloudflare, so the
+router needs no port forwarding at all. Visitors reach Cloudflare, which
+hands requests to nginx's loopback-only public block on `127.0.0.1:8081`.
+That block applies the public restrictions and restores each visitor's real
+IP from `CF-Connecting-IP`. `gbserver-internal` is unchanged and LAN-only.
+
+```
+# install cloudflared
+sudo mkdir -p --mode=0755 /usr/share/keyrings
+curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg | sudo tee /usr/share/keyrings/cloudflare-main.gpg >/dev/null
+echo 'deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main' | sudo tee /etc/apt/sources.list.d/cloudflared.list
+sudo apt-get update && sudo apt-get install cloudflared
+
+# create the tunnel (login prints a URL - open it and pick wulfpax-labs.com)
+cloudflared tunnel login
+cloudflared tunnel create gbserver          # note the tunnel ID it prints
+
+# configure and install it as a service
+TUNNEL_ID=<the ID>
+sudo mkdir -p /etc/cloudflared
+sudo cp ~/.cloudflared/$TUNNEL_ID.json /etc/cloudflared/
+sed "s/TUNNEL_ID/$TUNNEL_ID/g" deploy/cloudflared/config.yml | sudo tee /etc/cloudflared/config.yml >/dev/null
+sudo cloudflared tunnel --config /etc/cloudflared/config.yml ingress validate
+cloudflared tunnel route dns --overwrite-dns gbserver gbserver.wulfpax-labs.com
+sudo cloudflared service install
+```
+
+Then remove the port forwards from the router. Hide the no-longer-used
+public certificate from the dashboard's certificate panel by adding
+`GBSERVER_PUBLIC_CERT_PATH=` to `/etc/gbserver.env`.
 
 ### Updating the app later
 

@@ -263,25 +263,32 @@ fi
 # ---- verification ----------------------------------------------------------
 step "Verifying"
 code() { curl -sk -m 10 -o /dev/null -w '%{http_code}' "$@" || true; }
-PUB=(--resolve "${PUBLIC_HOST}:443:127.0.0.1")
+PUB=(-H "Host: ${PUBLIC_HOST}")
+PUB_URL="http://127.0.0.1:8081"   # nginx public block that the Cloudflare Tunnel feeds
 INT=(--resolve "${INTERNAL_HOST}:443:127.0.0.1")
 check() { # name expected actual
   if [[ "$3" == "$2" ]]; then info "${c_ok}pass${c_off}  $1"; else fail "$1 (expected $2, got $3)"; fi
 }
 
-check "public: ROM upload refused"          403 "$(code "${PUB[@]}" -X POST "https://${PUBLIC_HOST}/api/upload")"
-check "public: room ROM delete refused"     403 "$(code "${PUB[@]}" -X DELETE "https://${PUBLIC_HOST}/r/ABCDEF/api/rom/x.gb")"
-check "public: dashboard hidden"            404 "$(code "${PUB[@]}" "https://${PUBLIC_HOST}/dashboard")"
-check "public: admin API hidden"            404 "$(code "${PUB[@]}" "https://${PUBLIC_HOST}/api/admin/action-log")"
+check "public: ROM upload refused"          403 "$(code "${PUB[@]}" -X POST "${PUB_URL}/api/upload")"
+check "public: room ROM delete refused"     403 "$(code "${PUB[@]}" -X DELETE "${PUB_URL}/r/ABCDEF/api/rom/x.gb")"
+check "public: dashboard hidden"            404 "$(code "${PUB[@]}" "${PUB_URL}/dashboard")"
+check "public: admin API hidden"            404 "$(code "${PUB[@]}" "${PUB_URL}/api/admin/action-log")"
 if [[ -f "$APP_DIR/offline.flag" ]]; then
   warn "server is in offline mode - skipped player-side checks"
 else
-  check "public: player page loads"         200 "$(code "${PUB[@]}" "https://${PUBLIC_HOST}/")"
+  check "public: player page loads"         200 "$(code "${PUB[@]}" "${PUB_URL}/")"
   check "internal: upload reaches app"      400 "$(code "${INT[@]}" -X POST "https://${INTERNAL_HOST}/api/upload")"
 fi
 check "internal: admin token accepted"      200 "$(code "${INT[@]}" -H "Authorization: Bearer ${TOKEN}" "https://${INTERNAL_HOST}/api/admin/action-log")"
 check "internal: path traversal blocked"    400 "$(code "${INT[@]}" -X DELETE -H "Authorization: Bearer ${TOKEN}" "https://${INTERNAL_HOST}/api/admin/rom/..%2Fapp.py")"
 [[ -f "$APP_DIR/app.py" ]] && info "${c_ok}pass${c_off}  app.py still present" || fail "app.py missing"
+
+if systemctl is-active --quiet cloudflared 2>/dev/null; then
+  info "${c_ok}pass${c_off}  cloudflared tunnel service is running"
+else
+  warn "cloudflared isn't running - ${PUBLIC_HOST} won't be reachable from the internet (see README: Cloudflare Tunnel)"
+fi
 
 trap - ERR
 kill "$SUDO_KEEPALIVE" 2>/dev/null || true
