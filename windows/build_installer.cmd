@@ -34,19 +34,41 @@ if not defined ISCC (
 if not defined ISCC (
     echo [ERROR] Inno Setup 6 compiler not found.
     echo Install Inno Setup 6 from https://jrsoftware.org/isdl.php and re-run.
+    echo.
+    pause
     exit /b 1
 )
+
+rem ------------------------------------------------------------------
+rem  Where the installer lands. %~dp0 is this script's own folder
+rem  (windows\), so the output path is absolute and unambiguous no
+rem  matter which directory ISCC happens to use as its cwd.
+rem ------------------------------------------------------------------
+set OUTDIR=%~dp0Output
+if not exist "%OUTDIR%" mkdir "%OUTDIR%"
 
 set RUNTIME=1
 for /f "tokens=3" %%V in ('findstr /b /c:"RUNTIME_VERSION = " windows\launcher.py') do set RUNTIME=%%V
 
 echo Using Inno Setup: "%ISCC%"
-"%ISCC%" /DRuntimeVersion=%RUNTIME% "windows\gbserver.iss"
-if errorlevel 1 exit /b 1
+echo Building installer into: %OUTDIR%
+"%ISCC%" /DRuntimeVersion=%RUNTIME% /O"%OUTDIR%" "windows\gbserver.iss"
+if errorlevel 1 (
+    echo [ERROR] Inno Setup compiler failed - see messages above.
+    echo         Looked for output in: %OUTDIR%
+    exit /b 1
+)
+
+if not exist "%OUTDIR%\gbserver-setup.exe" (
+    echo [ERROR] ISCC reported success but gbserver-setup.exe is missing!
+    echo         Expected: "%OUTDIR%\gbserver-setup.exe"
+    echo         Check Inno Setup output above and the Output folder.
+    exit /b 1
+)
 
 echo.
 echo ============================================================
-echo  Done!  windows\Output\gbserver-setup.exe
+echo  Done!  "%OUTDIR%\gbserver-setup.exe"
 echo  Installs per-user, no admin rights needed. After install it
 echo  updates itself from GitHub - no need to rebuild for code changes.
 echo ============================================================
