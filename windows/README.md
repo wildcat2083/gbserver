@@ -31,6 +31,7 @@ minutes**, so push only what you'd be happy to run.
 |---|---|
 | `%LOCALAPPDATA%\Programs\gbserver\` | `gbserver.exe` and its libraries (the installer) |
 | `%LOCALAPPDATA%\gbserver\data\` | `roms\`, `saves\`, `blocked_ips.json` - never touched by updates, reinstalls or uninstalling |
+| `%LOCALAPPDATA%\gbserver\data\admin.token` | the dashboard admin login token, generated on first launch |
 | `%LOCALAPPDATA%\gbserver\app\<commit>\` | downloaded code versions (the newest 3 are kept) |
 | `%LOCALAPPDATA%\gbserver\launcher.log` | update, restart and rollback history |
 | `%LOCALAPPDATA%\gbserver\launcher.json` | settings |

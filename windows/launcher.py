@@ -105,6 +105,7 @@ DATA_DIR = ROOT / "data"
 STATE_PATH = ROOT / "state.json"
 SETTINGS_PATH = ROOT / "launcher.json"
 LOG_PATH = ROOT / "launcher.log"
+ADMIN_TOKEN_PATH = DATA_DIR / "admin.token"
 
 _log_lock = threading.Lock()
 
@@ -121,6 +122,36 @@ def log(message):
                 LOG_PATH.replace(LOG_PATH.with_suffix(".log.1"))
         except OSError:
             pass
+
+
+def get_admin_token():
+    """Admin token for the dashboard login.
+
+    Preference order:
+      1. GBSERVER_ADMIN_TOKEN environment variable (set by the user).
+      2. A token persisted in the data dir, generated on first launcher run.
+
+    The persisted copy lives in DATA_DIR (not the program folder) so it
+    survives the app being reinstalled or its files replaced by updates.
+    """
+    from_env = os.environ.get("GBSERVER_ADMIN_TOKEN", "").strip()
+    if from_env:
+        return from_env
+    try:
+        stored = ADMIN_TOKEN_PATH.read_text(encoding="utf-8").strip()
+        if stored:
+            return stored
+    except OSError:
+        pass
+    token = secrets.token_hex(32)
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        ADMIN_TOKEN_PATH.write_text(token, encoding="utf-8")
+        log(f"generated admin token at {ADMIN_TOKEN_PATH}")
+    except OSError:
+        log(f"couldn't persist admin token to {ADMIN_TOKEN_PATH} - admin login unavailable")
+        return ""
+    return token
 
 
 def load_settings():
@@ -357,6 +388,7 @@ class Server:
         env.update({
             "GBSERVER_DATA_DIR": str(DATA_DIR),
             "GBSERVER_SUPERVISOR_TOKEN": self.token,
+            "GBSERVER_ADMIN_TOKEN": get_admin_token(),
             "GBSERVER_BEHIND_PROXY": "0",
             "PYTHONUNBUFFERED": "1",
         })
