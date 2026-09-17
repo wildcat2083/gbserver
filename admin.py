@@ -81,7 +81,9 @@ def _cert_expiry_info(label, path):
 
 
 def _all_cert_expiry_info():
-    return [_cert_expiry_info(label, path) for label, path in CERT_PATHS.items()]
+    # A path set to an empty value (e.g. GBSERVER_PUBLIC_CERT_PATH= once the
+    # public hostname is served by Cloudflare) is left off the panel.
+    return [_cert_expiry_info(label, path) for label, path in CERT_PATHS.items() if path]
 
 
 def _is_admin_request():
