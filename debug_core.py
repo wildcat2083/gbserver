@@ -428,7 +428,7 @@ class DebugCore:
                 try:
                     bank, addr = self.pyboy.symbol_lookup(symbol)
                 except Exception:
-                    raise ValueError(f'Unknown symbol "{symbol}" (no .sym file next to this ROM?)')
+                    raise ValueError(f'Unknown symbol "{symbol}" (no .sym file loaded for this ROM?)')
             addr = _int(addr, "addr", 0, 0xFFFF)
             if addr >= 0x8000:
                 raise ValueError(

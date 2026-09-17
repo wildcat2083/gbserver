@@ -142,12 +142,29 @@ def debugger_allowed_for_host(host):
     return host in INTERNAL_HOSTS
 
 
+# Where the debugger looks for .sym symbol files. Defaults to DATA_DIR/symbols
+# (kept out of roms/, which holds only ROMs); point GBSERVER_SYMBOLS_DIR
+# somewhere else to keep them with a disassembly checkout, for instance.
+SYMBOLS_DIR = (
+    Path(os.environ["GBSERVER_SYMBOLS_DIR"]).expanduser().resolve()
+    if os.environ.get("GBSERVER_SYMBOLS_DIR")
+    else DATA_DIR / "symbols"
+)
+
+
 def rom_symbols_path(rom_path):
-    """The .sym file for a ROM, if one sits beside it (name.sym or name.gb.sym)."""
+    """The .sym file for a ROM, or None.
+
+    Checked in order: SYMBOLS_DIR, then beside the ROM. Both "Game.sym" and
+    "Game.gbc.sym" are accepted, so a file straight out of rgbds works.
+    """
     rom_path = Path(rom_path)
-    for candidate in (rom_path.with_suffix(".sym"), rom_path.with_name(rom_path.name + ".sym")):
-        if candidate.is_file():
-            return candidate
+    names = (Path(rom_path.name).with_suffix(".sym").name, rom_path.name + ".sym")
+    for folder in (SYMBOLS_DIR, rom_path.parent):
+        for name in names:
+            candidate = folder / name
+            if candidate.is_file():
+                return candidate
     return None
 
 
