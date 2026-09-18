@@ -603,6 +603,10 @@ body {
   margin-left: 8px;
 }
 
+#fsMenuBtn {
+  margin-left: 8px;
+}
+
 .control-action-btn.grant {
   background: var(--gb-purple);
   color: #f7d7e7;
