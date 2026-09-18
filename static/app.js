@@ -441,6 +441,8 @@
 
     gameStage.appendChild(settingsBackdrop);
     gameStage.appendChild(settingsPanel);
+    gameStage.appendChild(document.getElementById("vkeyboardBackdrop"));
+    gameStage.appendChild(document.getElementById("vkeyboard"));
 
     const updateToggleVisibility = () => {
       const isFullscreen = !!(document.fullscreenElement || document.webkitFullscreenElement);
