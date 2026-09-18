@@ -38,6 +38,7 @@
   const canvasGL = document.getElementById("screenGL");
   const gameStage = document.getElementById("gameStage");
   const toggleControlsBtn = document.getElementById("toggleControlsBtn");
+  const fsMenuBtn = document.getElementById("fsMenuBtn");
   const imageData = ctx.createImageData(WIDTH, HEIGHT);
 
   const FILTER_KEY = "gbserver.videoFilter";
@@ -438,15 +439,20 @@
     canvas.addEventListener("dblclick", toggleFullscreen);
     canvasGL.addEventListener("dblclick", toggleFullscreen);
 
+    gameStage.appendChild(settingsBackdrop);
+    gameStage.appendChild(settingsPanel);
+
     const updateToggleVisibility = () => {
       const isFullscreen = !!(document.fullscreenElement || document.webkitFullscreenElement);
       toggleControlsBtn.hidden = !isFullscreen;
+      fsMenuBtn.hidden = !isFullscreen;
       if (!isFullscreen && controlsHidden) setControlsHidden(false);
     };
     document.addEventListener("fullscreenchange", updateToggleVisibility);
     document.addEventListener("webkitfullscreenchange", updateToggleVisibility);
 
     toggleControlsBtn.addEventListener("click", () => setControlsHidden(!controlsHidden));
+    fsMenuBtn.addEventListener("click", () => setSettingsOpen(true));
   }
 
   function clearScreen() {
