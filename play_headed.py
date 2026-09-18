@@ -5,6 +5,8 @@ from pathlib import Path
 
 from pyboy import PyBoy
 
+from config import rom_symbols_path
+
 
 BASE_DIR = Path(__file__).resolve().parent
 ROMS_DIR = BASE_DIR / "roms"
@@ -46,7 +48,7 @@ def main():
     # Load from bytes so PyBoy never writes .ram/.rtc/.state files beside the
     # ROM (its Z/X save-state hotkeys are disabled this way too - quitting saves
     # to saves/ instead).
-    sym_path = next((c for c in (rom_path.with_suffix(".sym"), rom_path.with_name(rom_path.name + ".sym")) if c.is_file()), None)
+    sym_path = rom_symbols_path(rom_path)
     pyboy = PyBoy(
         io.BytesIO(rom_path.read_bytes()),
         symbols=str(sym_path) if sym_path else None,

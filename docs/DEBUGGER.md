@@ -37,8 +37,8 @@ opened in the memory view, frozen, or watched.
 ## Breakpoints, watches, freezes
 
 - **Execution breakpoints** stop on the exact instruction, mid-frame. Enter
-  `0150`, `01:4A2F` (bank:address), or a label if a `.sym` file sits next to
-  the ROM. For $4000-$7FFF the bank is detected when unambiguous. ROM code
+  `0150`, `01:4A2F` (bank:address), or a label if a `.sym` file is installed
+  (see below). For $4000-$7FFF the bank is detected when unambiguous. ROM code
   ($0000-$7FFF) only - a breakpoint works by writing a marker byte, which in
   RAM would overwrite game data. Use a watch for RAM.
 - **Watches** pause at the end of the frame in which an address changes, or
@@ -63,6 +63,20 @@ resumes; **Step frame** runs one frame and stops again.
 - Save states are written with breakpoints temporarily removed, so they never
   contain breakpoint opcodes.
 - The debugger needs the `pyboy` engine (not Boytacean).
+
+### Symbol files (.sym)
+
+Optional: everything works with plain addresses. A `.sym` file, such as the one
+`make` produces next to a pokered build, lets you type labels instead.
+
+Put it in `symbols/` inside the data folder (`~/gbserver/symbols` on the Pi,
+`%LOCALAPPDATA%\gbserver\data\symbols` on Windows), named after the ROM:
+`Pokemon Red Debug.gbc` pairs with `Pokemon Red Debug.sym` or
+`Pokemon Red Debug.gbc.sym`. Next to the ROM in `roms/` also works, and
+`GBSERVER_SYMBOLS_DIR` points the lookup somewhere else entirely - a
+disassembly checkout, say. The file is read when the ROM loads, so load the
+ROM again after adding it, and copy a fresh `.sym` whenever you rebuild the
+ROM: addresses shift between builds.
 - `GBSERVER_DEBUGGER=on|internal|off` in `/etc/gbserver.env` controls
   availability. `internal` limits it to `GBSERVER_INTERNAL_HOSTS`.
 

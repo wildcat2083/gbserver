@@ -220,8 +220,9 @@ LAN hostname, or `off` to disable it.
 
 ## Where files live
 
-- `roms/` holds only ROMs (`.gb`, `.gbc`), plus an optional `.sym` symbol file
-  next to a ROM for the debugger. The server never writes anything here.
+- `roms/` holds only ROMs (`.gb`, `.gbc`). The server never writes anything here.
+- `symbols/` (optional) holds `.sym` files for the debugger, named after the
+  ROM; `GBSERVER_SYMBOLS_DIR` can point elsewhere.
 - `saves/` holds everything the server writes: save states (`<rom>.state`),
   per-ROM engine choices (`_engine_overrides.json`), and private rooms'
   saves under `saves/rooms/<code>/`.
