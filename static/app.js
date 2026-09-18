@@ -1807,6 +1807,15 @@
     updateVkeyPreview();
     const rows = getVkeyRows();
     if (rows[0] && rows[0][0]) rows[0][0].focus();
+
+    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+    const pad = pads[gamepadIndex];
+    if (pad) {
+      for (const [action, idx] of Object.entries({ up: 12, down: 13, left: 14, right: 15, a: 0, b: 1 })) {
+        const btn = pad.buttons[idx];
+        vkeyGamepadWasPressed[action] = !!(btn && btn.pressed);
+      }
+    }
   }
 
   function closeVirtualKeyboard() {
