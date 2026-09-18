@@ -1747,6 +1747,16 @@ body.viewer-mode #bufferRange {
   display: none;
 }
 
+#gameStage:fullscreen .settings-panel {
+  width: min(92vw, 560px);
+  max-height: min(90vh, 620px);
+}
+
+#gameStage:-webkit-full-screen .settings-panel {
+  width: min(92vw, 560px);
+  max-height: min(90vh, 620px);
+}
+
 @media (max-width: 700px) {
   #gameStage:fullscreen .system-buttons {
 
