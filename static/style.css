@@ -1790,3 +1790,38 @@ body.viewer-mode #bufferRange {
     height: 66px;
   }
 }
+
+/* Clear Shell + Pokemon: stronger outlines so keys/buttons/rows stay visible */
+
+body.theme-clearshell,
+body.theme-pokemon {
+  --gb-body-edge: rgba(240, 240, 246, 0.45);
+}
+
+body.theme-clearshell .vkey:not(.vkey-done),
+body.theme-clearshell .settings-btn,
+body.theme-clearshell .settings-close,
+body.theme-pokemon .vkey:not(.vkey-done),
+body.theme-pokemon .settings-btn,
+body.theme-pokemon .settings-close {
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  background: rgba(255, 255, 255, 0.10);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9);
+}
+
+body.theme-clearshell .vkeyboard button:focus,
+body.theme-clearshell .settings-panel button:focus,
+body.theme-clearshell .settings-panel select:focus,
+body.theme-clearshell .settings-panel input:focus,
+body.theme-clearshell .rom-search:focus,
+body.theme-clearshell .rom-select:focus,
+body.theme-clearshell .engine-select:focus,
+body.theme-pokemon .vkeyboard button:focus,
+body.theme-pokemon .settings-panel button:focus,
+body.theme-pokemon .settings-panel select:focus,
+body.theme-pokemon .settings-panel input:focus,
+body.theme-pokemon .rom-search:focus,
+body.theme-pokemon .rom-select:focus,
+body.theme-pokemon .engine-select:focus {
+  outline-color: #ffd166;
+}
