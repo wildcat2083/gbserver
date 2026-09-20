@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bit flag calculator</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Silkscreen&family=IBM+Plex+Sans:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --page:#1b201d;
+  --shell:#2a302c;
+  --edge:#3b443e;
+  --ink:#d6dccf;
+  --muted:#8e998c;
+  --lcd-0:#9bbc0f;
+  --lcd-1:#8bac0f;
+  --lcd-2:#306230;
+  --lcd-3:#0f380f;
+  --warn:#e8a05a;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--page);color:var(--ink);font-family:"IBM Plex Sans",system-ui,sans-serif;font-size:16px;line-height:1.55}
+main{max-width:720px;margin:0 auto;padding:2.5rem 1.25rem 3rem}
+h1{font-family:"Silkscreen",monospace;font-weight:400;font-size:1.6rem;margin:0 0 .25rem;color:var(--lcd-0);letter-spacing:.02em}
+.sub{color:var(--muted);margin:0 0 2rem;max-width:60ch}
+.controls{display:flex;flex-wrap:wrap;gap:1rem 1.5rem;align-items:flex-end;margin-bottom:1.25rem}
+.field{display:flex;flex-direction:column;gap:.35rem}
+.field label{font-size:.85rem;color:var(--muted)}
+input,select,button{font:inherit;color:var(--ink);background:var(--shell);border:1px solid var(--edge);border-radius:6px;height:40px;padding:0 .75rem}
+input{width:6.5rem;font-family:"Silkscreen",monospace;letter-spacing:.05em}
+select{padding-right:2rem}
+button{cursor:pointer}
+button:hover,input:hover,select:hover{border-color:var(--muted)}
+:focus-visible{outline:2px solid var(--lcd-0);outline-offset:2px}
+.err{color:var(--warn);font-size:.85rem;min-height:1.3em;margin:-.5rem 0 .75rem}
+.lcd{background:var(--lcd-1);border:10px solid var(--shell);outline:1px solid var(--edge);border-radius:10px 10px 36px 10px;padding:1.25rem;color:var(--lcd-3);font-family:"Silkscreen",monospace}
+.bits{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:6px}
+.bit{height:auto;display:flex;flex-direction:column;align-items:center;gap:2px;padding:.5rem 0;background:var(--lcd-0);color:var(--lcd-3);border:2px solid var(--lcd-2);border-radius:4px;font-family:inherit}
+.bit:hover{border-color:var(--lcd-3)}
+.bit[aria-pressed="true"]{background:var(--lcd-3);color:var(--lcd-0);border-color:var(--lcd-3)}
+.bit .n{font-size:.7rem}
+.bit .v{font-size:1.6rem;line-height:1.1}
+.bit .w{font-size:.7rem;opacity:.8}
+.readout{display:grid;grid-template-columns:1.4fr 1fr 1.4fr;gap:1rem;margin-top:1.25rem;padding-top:1rem;border-top:2px dashed var(--lcd-2)}
+.readout div span{display:block;font-size:.7rem;color:var(--lcd-2)}
+.readout div b{font-weight:400;font-size:1.6rem;line-height:1.2}
+.readout .big b{font-size:2.4rem}
+.note{margin-top:1.5rem;color:var(--muted);font-size:.9rem;max-width:62ch}
+@media (max-width:560px){
+  .bit .v{font-size:1.2rem}
+  .bit .n,.bit .w{font-size:.6rem}
+  .readout{grid-template-columns:1fr 1fr}
+  .readout .big{grid-column:1/-1}
+}
+</style>
+</head>
+<body>
+<main>
+  <h1>Bit flag calculator</h1>
+  <p class="sub">Flip bits to build a byte, then type the 3-digit number into the debugger's Write memory screen.</p>
+
+  <div class="controls">
+    <div class="field">
+      <label for="addr">Address</label>
+      <input id="addr" placeholder="C000" maxlength="4" autocomplete="off" spellcheck="false">
+    </div>
+    <div class="field">
+      <label for="hexin">Start from hex</label>
+      <input id="hexin" value="00" maxlength="2" autocomplete="off" spellcheck="false">
+    </div>
+    <div class="field">
+      <label for="decin">Or decimal</label>
+      <input id="decin" value="0" maxlength="3" inputmode="numeric" autocomplete="off">
+    </div>
+    <button id="clear" type="button">Clear all bits</button>
+  </div>
+  <div class="err" id="err" role="alert"></div>
+
+  <section class="lcd" aria-label="Byte editor">
+    <div class="bits" id="bits"></div>
+    <div class="readout">
+      <div class="big"><span id="writeLabel">Type in Write memory</span><b id="outDec">000</b></div>
+      <div><span>Hex</span><b id="outHex">$00</b></div>
+      <div><span>Binary</span><b id="outBin">00000000</b></div>
+    </div>
+  </section>
+
+  <p class="note">Writing replaces the whole byte. Check the current value in the Hex viewer first and start from that, so flags that were already on stay on.</p>
+</main>
+
+<script>
+const labels = Array.from({length: 8}, (_, i) => "Bit " + i);
+
+let value = 0;
+
+const bitsEl = document.getElementById("bits");
+const hexIn = document.getElementById("hexin");
+const decIn = document.getElementById("decin");
+const err = document.getElementById("err");
+
+for (let i = 7; i >= 0; i--) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "bit";
+  b.dataset.i = i;
+  b.innerHTML = '<span class="n">bit ' + i + '</span><span class="v">0</span><span class="w">+' + (1 << i) + '</span>';
+  b.addEventListener("click", () => { value ^= (1 << i); render("bits"); });
+  bitsEl.appendChild(b);
+}
+
+function render(source) {
+  const hex = value.toString(16).toUpperCase().padStart(2, "0");
+  document.querySelectorAll(".bit").forEach(b => {
+    const on = (value >> b.dataset.i) & 1;
+    b.setAttribute("aria-pressed", on ? "true" : "false");
+    b.setAttribute("aria-label", labels[b.dataset.i] + ", " + (on ? "on" : "off"));
+    b.querySelector(".v").textContent = on;
+  });
+  const a = document.getElementById("addr").value.trim();
+  document.getElementById("writeLabel").textContent = a.length === 4 ? "Type in Write memory at " + a : "Type in Write memory";
+  document.getElementById("outDec").textContent = String(value).padStart(3, "0");
+  document.getElementById("outHex").textContent = "$" + hex;
+  document.getElementById("outBin").textContent = value.toString(2).padStart(8, "0");
+  if (source !== "hex") hexIn.value = hex;
+  if (source !== "dec") decIn.value = value;
+  if (source === "bits") err.textContent = "";
+}
+
+hexIn.addEventListener("input", () => {
+  const t = hexIn.value.trim();
+  if (!/^[0-9a-fA-F]{1,2}$/.test(t)) { err.textContent = "Hex needs 1 or 2 digits from 0-9 and A-F, like 01 or 3F."; return; }
+  err.textContent = "";
+  value = parseInt(t, 16);
+  render("hex");
+});
+
+decIn.addEventListener("input", () => {
+  const t = decIn.value.trim();
+  const n = Number(t);
+  if (!/^\d{1,3}$/.test(t) || n > 255) { err.textContent = "Decimal must be a whole number from 0 to 255."; return; }
+  err.textContent = "";
+  value = n;
+  render("dec");
+});
+
+const addrIn = document.getElementById("addr");
+addrIn.addEventListener("input", () => {
+  const t = addrIn.value.trim();
+  if (t && !/^[0-9a-fA-F]{1,4}$/.test(t)) { err.textContent = "Address needs up to 4 hex digits, like C000."; return; }
+  err.textContent = "";
+  addrIn.value = t.toUpperCase();
+  render("bits");
+});
+
+document.getElementById("clear").addEventListener("click", () => { value = 0; render("bits"); });
+
+render("bits");
+</script>
+</body>
+</html>
