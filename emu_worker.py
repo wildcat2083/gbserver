@@ -2,6 +2,7 @@ from pathlib import Path
 import math
 import signal
 import queue
+import struct
 import time
 import zlib
 import io
@@ -20,6 +21,23 @@ def run_worker(cmd_queue, out_queue, roms_dir, saves_dir, sound_sample_rate,
             signal.signal(sig, signal.SIG_DFL)
 
     from pyboy import PyBoy
+    try:
+        from pyboy.utils import IntIOWrapper
+    except Exception:
+        class IntIOWrapper:
+            def __init__(self, buf):
+                self.buffer = buf
+
+            def write(self, byte):
+                if isinstance(byte, int):
+                    self.buffer.write(bytes([byte]))
+                else:
+                    self.buffer.write(byte)
+                return 1
+
+            def read(self):
+                data = self.buffer.read(1)
+                return data[0] if data else 0
     from debug_core import DebugCore
     from config import rom_symbols_path
     try:
@@ -56,6 +74,9 @@ def run_worker(cmd_queue, out_queue, roms_dir, saves_dir, sound_sample_rate,
     last_status_sent = None
     active_cheats = []
 
+    rtc_io = None
+    rtc_has_rtc = False
+
     frame_no = 0
     autosave_every = 60 * 60 * autosave_interval_minutes
 
@@ -91,6 +112,179 @@ def run_worker(cmd_queue, out_queue, roms_dir, saves_dir, sound_sample_rate,
             out_queue.put(status)
             last_status_sent = dict(status)
 
+    _RTC_HEADER_TYPES = (0x0F, 0x10)
+
+    def _rom_has_rtc(rom_file):
+        """MBC3 + Timer cartridges are types 0x0F/0x10 in the ROM header.
+
+        Replaces the old `eng.mb.cartridge.rtc` lookup: on the compiled PyBoy
+        wheel the internal `mb` attribute is not exposed to Python, so the
+        whole RTC feature never engaged. The header byte is definitive and
+        needs no engine introspection.
+        """
+        try:
+            return rom_file.read_bytes()[0x147] in _RTC_HEADER_TYPES
+        except Exception:
+            return False
+
+    def _rtc_registers(pyboy_eng):
+        """Read the battery clock through the game's own MBC3 register
+        protocol, which PyBoy routes to its internal RTC.
+
+        Works on the compiled PyBoy wheel where `mb`/`cartridge.rtc` are
+        hidden. Runs between ticks, so the game's own register writes cannot
+        interfere mid-sequence.
+        """
+        if pyboy_eng is None:
+            return None
+        m = pyboy_eng.memory
+        m[0x0000] = 0x0A  # enable cartridge RAM / RTC access
+        m[0x6000] = 0x00  # latch: arm
+        m[0x6000] = 0x01  # latch: freeze current clock into the registers
+        vals = {}
+        for reg, name in (
+            (0x08, "sec"), (0x09, "min"), (0x0A, "hour"),
+            (0x0B, "day_low"), (0x0C, "day_high"),
+        ):
+            m[0x4000] = reg  # select RTC register
+            vals[name] = m[0xA000]
+        return vals
+
+    def new_rtc_io(stem):
+        path = saves_dir / (stem + ".rtc")
+        try:
+            data = path.read_bytes()
+        except OSError:
+            data = b""
+        if len(data) == 0:
+            # PyBoy's RTC.load_state raises "No data" on an empty buffer,
+            # which killed every battery-clock game at boot. Seed a valid
+            # fresh-clock blob (timezero=now, halt=0, day_carry=0) exactly as
+            # PyBoy builds it for a brand-new cartridge.
+            data = struct.pack("d", time.time()) + b"\x00\x00"
+        return io.BytesIO(data)
+
+    def flush_rtc():
+        nonlocal rtc_io
+        if pyboy is None or rom_path is None or not rtc_has_rtc:
+            return
+        try:
+            regs = _rtc_registers(pyboy)
+        except Exception as e:
+            print(f"[worker] could not read rtc for flush: {e}")
+            return
+        dhi = regs["day_high"]
+        if (dhi >> 6) & 1 or (dhi >> 7) & 1:
+            # halted clock or pending day-counter carry: cannot reconstruct
+            # timezero from the displayed register values.
+            return
+        day = ((dhi & 0b1) << 8) | regs["day_low"]
+        total = day * 86400 + regs["hour"] * 3600 + regs["min"] * 60 + regs["sec"]
+        blob = struct.pack("d", time.time() - total) + b"\x00\x00"
+        rtc_io = io.BytesIO(blob)
+        (saves_dir / (rom_path.stem + ".rtc")).write_bytes(blob)
+
+    def rtc_readable():
+        return rtc_has_rtc
+
+    def do_rtc_info():
+        base = {"running": pyboy is not None and rom_path is not None, "engine": engine_name}
+        if pyboy is None or rom_path is None or not rtc_has_rtc:
+            base["rtc"] = False
+            return base
+        try:
+            regs = _rtc_registers(pyboy)
+            dhi = regs["day_high"]
+            base.update({
+                "rtc": True,
+                "sec": regs["sec"],
+                "min": regs["min"],
+                "hour": regs["hour"],
+                "day": ((dhi & 0b1) << 8) | regs["day_low"],
+                "halt": (dhi >> 6) & 1,
+                "day_carry": (dhi >> 7) & 1,
+            })
+        except Exception as e:
+            base["rtc"] = True
+            base["error"] = str(e)
+        return base
+
+    def _state_rtc_offset(state_bytes):
+        """Offset of the 10-byte RTC block (timezero double + halt + carry)
+        inside a native `.state` buffer.
+
+        PyBoy serializes the cartridge block (bank selects, then the SRAM
+        banks, then the RTC) as the second-to-last block in the save, followed
+        only by fixed-size interaction/serial bytes -- 48 bytes after the RTC
+        block for this PyBoy version. The candidate epoch double acts as a
+        sanity check.
+        """
+        if len(state_bytes) >= 48:
+            cand = len(state_bytes) - 48
+            try:
+                epoch = struct.unpack("d", state_bytes[cand:cand + 8])[0]
+                if 1.0e9 < epoch < 1.1e10:
+                    return cand
+            except Exception:
+                pass
+        return None
+
+    def do_rtc_set(values):
+        nonlocal pyboy, rtc_io
+        if pyboy is None or rom_path is None:
+            raise ValueError("no ROM is currently loaded")
+        if not rtc_has_rtc:
+            raise ValueError("the currently loaded ROM has no battery clock")
+
+        if values.get("now"):
+            target_epoch = time.time()
+            halt = 0
+        else:
+            day = 0 if values.get("day") is None else values["day"]
+            hour = 0 if values.get("hour") is None else values["hour"]
+            minute = 0 if values.get("min") is None else values["min"]
+            second = 0 if values.get("sec") is None else values["sec"]
+            if not all(isinstance(v, int) and not isinstance(v, bool) for v in (day, hour, minute, second)):
+                raise ValueError("day/hour/min/sec must be integers")
+            if not (0 <= day <= 511 and 0 <= hour <= 23 and 0 <= minute <= 59 and 0 <= second <= 59):
+                raise ValueError("clock values out of range")
+            total = day * 86400 + hour * 3600 + minute * 60 + second
+            target_epoch = time.time() - total
+            halt = 1 if values.get("halt") else 0
+
+        # PyBoy has no public way to re-target a running engine's clock, so
+        # rebuild it: save the live state, patch the RTC block (whose offset is
+        # fixed in the save layout), then reload. The live RAM is preserved by
+        # the snapshot.
+        snapshot = io.BytesIO()
+        with dbg.breakpoints_removed():
+            pyboy.save_state(snapshot)
+        snapshot.seek(0)
+        data = bytearray(snapshot.getvalue())
+        off = _state_rtc_offset(data)
+        if off is None:
+            raise ValueError("could not locate the RTC block in the current save")
+        data[off:off + 8] = struct.pack("d", target_epoch)
+        data[off + 8] = halt
+        data[off + 9] = 0  # day_carry: the clock is re-anchored from its total
+
+        rtc_blob = bytes(data[off:off + 10])
+        (saves_dir / (rom_path.stem + ".rtc")).write_bytes(rtc_blob)
+
+        rtc_io = io.BytesIO(rtc_blob)
+        new_pyboy = make_pyboy(rom_path, rtc_file=rtc_io)
+        new_pyboy.set_emulation_speed(0)
+        new_pyboy.load_state(io.BytesIO(bytes(data)))
+        old_pyboy = pyboy
+        pyboy = new_pyboy
+        dbg.attach(pyboy, engine_name)
+        try:
+            old_pyboy.stop(save=False)
+        except Exception:
+            pass
+
+        return do_rtc_info()
+
     def do_stop(autosave=True):
         nonlocal pyboy, running, last_frame_raw
         running = False
@@ -103,9 +297,19 @@ def run_worker(cmd_queue, out_queue, roms_dir, saves_dir, sound_sample_rate,
                 except Exception as e:
                     print(f"[worker] could not save state on stop: {e}")
             try:
-                pyboy.stop(save=False)
-            except Exception:
-                pass
+                if engine_name == "pyboy":
+                    if rtc_has_rtc:
+                        # stop(save=True) pulls the exact timezero out of the
+                        # engine into the .rtc blob; it never touches roms/.
+                        out = io.BytesIO()
+                        pyboy.stop(save=True, ram_file=io.BytesIO(), rtc_file=out)
+                        (saves_dir / (rom_path.stem + ".rtc")).write_bytes(out.getvalue())
+                    else:
+                        pyboy.stop(save=False)
+                else:
+                    pyboy.stop(save=False)
+            except Exception as e:
+                print(f"[worker] could not finish emulator session: {e}")
             pyboy = None
             dbg.detach()
             last_frame_raw = None
@@ -116,7 +320,7 @@ def run_worker(cmd_queue, out_queue, roms_dir, saves_dir, sound_sample_rate,
         nonlocal pyboy, rom_path, engine_name, running, fast_forward
         nonlocal last_frame_raw, audio_accum, frame_no, active_cheats
         nonlocal next_frame, fps_window_start, fps_frames
-        nonlocal dc_last_input, dc_last_output
+        nonlocal dc_last_input, dc_last_output, rtc_io, rtc_has_rtc
 
         active_cheats = []
 
@@ -151,6 +355,9 @@ def run_worker(cmd_queue, out_queue, roms_dir, saves_dir, sound_sample_rate,
             )
 
         if use_boytacean:
+            rtc_io = None
+            rtc_has_rtc = False
+            rtc_path = saves_dir / (candidate.stem + ".rtc")
             new_pyboy = Boytacean(
                 str(candidate),
                 window="null",
@@ -158,12 +365,17 @@ def run_worker(cmd_queue, out_queue, roms_dir, saves_dir, sound_sample_rate,
                 sound_sample_rate=sound_sample_rate,
                 sound_volume=sound_volume,
                 cgb=True if candidate.suffix.lower() == ".gbc" else None,
+                rtc_file=str(rtc_path) if rtc_path.exists() else None,
             )
             engine_name = "boytacean"
         else:
             extra = {}
             if ram_bytes is not None:
                 extra["ram_file"] = io.BytesIO(ram_bytes)
+            rtc_has_rtc = _rom_has_rtc(candidate)
+            if rtc_has_rtc:
+                rtc_io = new_rtc_io(candidate.stem)
+                extra["rtc_file"] = rtc_io
             new_pyboy = make_pyboy(candidate, **extra)
             engine_name = "pyboy"
 
@@ -204,14 +416,16 @@ def run_worker(cmd_queue, out_queue, roms_dir, saves_dir, sound_sample_rate,
         save_path = saves_dir / (rom_path.stem + ".state")
         with dbg.breakpoints_removed(), open(save_path, "wb") as f:
             pyboy.save_state(f)
+        flush_rtc()
 
     def do_extract_sav():
-        nonlocal pyboy
+        nonlocal pyboy, rtc_io, rtc_has_rtc
         if pyboy is None or rom_path is None:
             raise ValueError("no ROM is currently loaded")
         if engine_name != "pyboy":
             raise ValueError("extracting a .sav requires the pyboy engine")
 
+        flush_rtc()
         snapshot = io.BytesIO()
         with dbg.breakpoints_removed():
             pyboy.save_state(snapshot)
@@ -223,7 +437,13 @@ def run_worker(cmd_queue, out_queue, roms_dir, saves_dir, sound_sample_rate,
         ram_buf.seek(0)
         sav_bytes = ram_buf.read()
 
-        new_pyboy = make_pyboy(rom_path)
+        rtc_has_rtc = _rom_has_rtc(rom_path)
+        if rtc_has_rtc:
+            rtc_io = new_rtc_io(rom_path.stem)
+            new_pyboy = make_pyboy(rom_path, rtc_file=rtc_io)
+        else:
+            rtc_io = None
+            new_pyboy = make_pyboy(rom_path)
         new_pyboy.load_state(snapshot)
         new_pyboy.set_emulation_speed(0)
         pyboy = new_pyboy
@@ -360,6 +580,11 @@ def run_worker(cmd_queue, out_queue, roms_dir, saves_dir, sound_sample_rate,
             elif cmd == "set_cheats":
                 do_set_cheats(msg["codes"])
                 ack()
+            elif cmd == "rtc_info":
+                out_queue.put({"type": "ack", "req_id": req_id, "ok": True, **do_rtc_info()})
+            elif cmd == "rtc_set":
+                result = do_rtc_set(msg.get("values") or {})
+                out_queue.put({"type": "ack", "req_id": req_id, "ok": True, **result})
         except Exception as e:
             ack(ok=False, error=str(e))
 

@@ -243,6 +243,49 @@ def api_cheats(room_code=None):
     return jsonify({"ok": True, "parsed": parsed})
 
 
+@app.route("/api/rtc", methods=["GET", "POST"])
+@app.route("/r/<room_code>/api/rtc", methods=["GET", "POST"])
+@limiter.limit("30 per minute")
+def api_rtc(room_code=None):
+    emu = get_emulator_or_404(room_code)
+    if request.method == "POST":
+        denied = controller_check(emu)
+        if denied:
+            return denied
+        data = request.get_json(force=True) or {}
+        values = {}
+        if data.get("now"):
+            values["now"] = True
+        else:
+            for key, lo, hi in (("day", 0, 511), ("hour", 0, 23), ("min", 0, 59), ("sec", 0, 59)):
+                val = data.get(key)
+                if val is not None:
+                    if isinstance(val, bool) or not isinstance(val, int) or not (lo <= val <= hi):
+                        return jsonify({"error": f"{key} must be an integer from {lo}-{hi}"}), 400
+                    values[key] = val
+            if not values:
+                return jsonify({
+                    "error": "set the clock with day/hour/min/sec, or set now: true to use the server clock",
+                }), 400
+        if "halt" in data:
+            if not isinstance(data["halt"], bool):
+                return jsonify({"error": "halt must be true or false"}), 400
+            values["halt"] = data["halt"]
+        try:
+            result = emu.rtc_set(values)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        except TimeoutError:
+            return jsonify({"error": "emulator worker not responding"}), 500
+        return jsonify({"ok": True, **{k: v for k, v in result.items() if k != "ok"}})
+
+    try:
+        info = emu.rtc_info()
+    except TimeoutError:
+        return jsonify({"error": "emulator worker not responding"}), 500
+    return jsonify(info)
+
+
 @app.route("/api/rom/<path:filename>/engine", methods=["GET", "POST"])
 @app.route("/r/<room_code>/api/rom/<path:filename>/engine", methods=["GET", "POST"])
 @limiter.limit("30 per minute")

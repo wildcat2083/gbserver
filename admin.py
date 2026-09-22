@@ -12,6 +12,7 @@ from flask import jsonify, render_template, request
 from app import app, limiter
 from config import DATA_DIR, MAX_ROOMS, OFFLINE_CLOSE_CODE, OFFLINE_FLAG_PATH, safe_rom_name, safe_rom_path
 from engine_config import BOYTACEAN_AVAILABLE
+from metrics import system_metrics
 from rooms import default_emu, get_emulator, rooms, rooms_lock, create_room, shared_game_state
 
 _INSECURE_ADMIN_TOKENS = {"", "changeme", "change-me", "changeme123", "admin", "password"}
@@ -171,9 +172,9 @@ def _emu_stats(emu, include_clients=False):
         "engine": emu.engine_name,
         "fast_forward": emu.fast_forward,
         "total_clients": total_clients,
-
         "viewer_count": max(0, total_clients - 1),
         "has_controller": total_clients > 0,
+        "metrics": emu.metrics_snapshot(),
     }
     if include_clients:
         stats["clients"] = [
@@ -184,6 +185,7 @@ def _emu_stats(emu, include_clients=False):
             }
             for i, (ws, cid) in enumerate(clients_snapshot)
         ]
+        stats["worker"] = emu.worker_info()
     return stats
 
 
@@ -218,6 +220,7 @@ def api_dashboard_stats():
     if is_admin:
         payload["blocked_ips"] = sorted(blocked_ips)
         payload["certificates"] = _all_cert_expiry_info()
+        payload["system"] = system_metrics()
     return jsonify(payload)
 
 

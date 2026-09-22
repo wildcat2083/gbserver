@@ -5,6 +5,7 @@ flask-limiter
 flask-sock
 numpy
 packaging
+psutil
 pyinstaller
 
 # Optional: the Rust-based boytacean engine has no Windows wheel, so it must

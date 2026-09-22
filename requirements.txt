@@ -6,3 +6,4 @@ flask-sock
 numpy
 gunicorn
 packaging
+psutil
