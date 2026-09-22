@@ -1,0 +1,4 @@
+{
+  "runtime_version": 1,
+  "note": "Bump runtime_version (and RUNTIME_VERSION in windows/launcher.py) when the code needs a Python package or library upgrade that isn't in the installed gbserver.exe. Installs with an older runtime keep running their current version and log that a new installer is needed."
+}
