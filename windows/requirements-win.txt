@@ -1,0 +1,15 @@
+pyboy
+pillow
+flask
+flask-limiter
+flask-sock
+numpy
+packaging
+psutil
+pyinstaller
+
+# Optional: the Rust-based boytacean engine has no Windows wheel, so it must
+# be compiled from source (needs a Rust toolchain):
+#   pip install setuptools-rust boytacean
+# Uncomment only if you have Rust installed, then rebuild.
+# boytacean

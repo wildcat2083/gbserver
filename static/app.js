@@ -547,6 +547,10 @@
   const requestControlBtn = document.getElementById("requestControlBtn");
   const grantControlBtn = document.getElementById("grantControlBtn");
   const stopMsg = document.getElementById("stopMsg");
+  const rtcSection = document.getElementById("rtcSection");
+  const rtcInfo = document.getElementById("rtcInfo");
+  const rtcMsg = document.getElementById("rtcMsg");
+  const rtcSetNowBtn = document.getElementById("rtcSetNowBtn");
 
   let SAMPLE_RATE = 24000;
   let ws = null;
@@ -2468,6 +2472,7 @@
     lastRomsRes = romsRes;
     lastConfigRes = configRes;
 
+    refreshRtc();
     if (!changed) return;
 
     romNameEl.textContent = configRes.current_rom || "No ROM loaded";
@@ -2483,6 +2488,60 @@
     }
 
     renderRomList();
+  }
+
+  function renderRtc(info) {
+    if (rtcSection) {
+      rtcSection.hidden = !(lastConfigRes.current_rom && info && info.rtc === true && !info.error);
+    }
+    if (rtcSection && rtcSection.hidden) {
+      if (rtcMsg) rtcMsg.textContent = "";
+      return;
+    }
+    if (rtcInfo && info.rtc) {
+      const pad = (n) => String(n).padStart(2, "0");
+      rtcInfo.textContent = `Day ${info.day} \u00b7 ${pad(info.hour)}:${pad(info.min)}:${pad(info.sec)}`;
+      rtcInfo.style.opacity = info.halt ? "0.55" : "1";
+      rtcInfo.title = info.halt ? "Clock is halted" : "Clock is running";
+    }
+  }
+
+  async function refreshRtc() {
+    try {
+      const res = await fetch(apiPath("/api/rtc"));
+      renderRtc(await res.json());
+    } catch (_) {
+      renderRtc(null);
+    }
+  }
+
+  function bindRtc() {
+    if (!rtcSetNowBtn) return;
+    rtcSetNowBtn.addEventListener("click", async () => {
+      try {
+        const res = await fetch(apiPath("/api/rtc"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Client-Id": CLIENT_ID },
+          body: JSON.stringify({ now: true }),
+        });
+        const data = await res.json();
+        if (rtcMsg) {
+          if (data.ok) {
+            rtcMsg.textContent = "Clock synced to the server.";
+            rtcMsg.className = "ok";
+          } else {
+            rtcMsg.textContent = data.error || "Could not set the clock";
+            rtcMsg.className = "error";
+          }
+        }
+        refreshRtc();
+      } catch (_) {
+        if (rtcMsg) {
+          rtcMsg.textContent = "Request failed";
+          rtcMsg.className = "error";
+        }
+      }
+    });
   }
 
   async function playRom(filename, loadSave) {
@@ -2868,6 +2927,7 @@
   bindChatForm();
   bindCheatPanel();
   bindDebugSequence();
+  bindRtc();
   startLibraryPolling();
   refreshLibrary();
 })();

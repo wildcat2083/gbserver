@@ -116,6 +116,9 @@ class Emulator:
         self.last_activity = time.time()
         self._last_frame_compressed = None
 
+        self._metrics_buckets = deque()
+        self._metrics_lock = threading.Lock()
+
         self.auto_stop_when_empty = auto_stop_when_empty
         self._empty_grace_seconds = 30
 
@@ -194,8 +197,10 @@ class Emulator:
 
             if msg_type == "video":
                 self._last_frame_compressed = msg["data"]
+                self._metric_observe("video", len(msg["data"]) + 1)
                 self._broadcast(MSG_VIDEO + msg["data"], "video")
             elif msg_type == "audio":
+                self._metric_observe("audio", len(msg["data"]) + 1)
                 self._broadcast(MSG_AUDIO + msg["data"], "audio")
             elif msg_type == "status":
                 self._current_rom_name = msg["current_rom"]
@@ -219,6 +224,56 @@ class Emulator:
                     if req_id in self._pending_acks:
                         self._ack_results[req_id] = msg
                         self._pending_acks[req_id].set()
+
+    def _metric_observe(self, kind, payload_len):
+        now = time.monotonic()
+        with self.clients_lock:
+            viewer_mult = max(1, len(self.clients))
+        with self._metrics_lock:
+            if self._metrics_buckets and now - self._metrics_buckets[-1]["t"] < 1.0:
+                bucket = self._metrics_buckets[-1]
+            else:
+                bucket = {"t": now, "video_bytes": 0, "audio_bytes": 0, "frames": 0}
+                self._metrics_buckets.append(bucket)
+            if kind == "video":
+                bucket["frames"] += 1
+                bucket["video_bytes"] += payload_len * viewer_mult
+            else:
+                bucket["audio_bytes"] += payload_len * viewer_mult
+
+    def metrics_snapshot(self, window_seconds=10):
+        now = time.monotonic()
+        with self._metrics_lock:
+            while self._metrics_buckets and now - self._metrics_buckets[0]["t"] > window_seconds:
+                self._metrics_buckets.popleft()
+            buckets = list(self._metrics_buckets)
+        if not buckets:
+            return {"fps": 0, "video_kbps": 0.0, "audio_kbps": 0.0, "total_kbps": 0.0}
+        frames = sum(b["frames"] for b in buckets)
+        video = sum(b["video_bytes"] for b in buckets)
+        audio = sum(b["audio_bytes"] for b in buckets)
+        span = max(1e-6, buckets[-1]["t"] - buckets[0]["t"] + 1.0)
+        return {
+            "fps": round(frames / span, 1),
+            "video_kbps": round(video * 8 / 1000 / span, 1),
+            "audio_kbps": round(audio * 8 / 1000 / span, 1),
+            "total_kbps": round((video + audio) * 8 / 1000 / span, 1),
+        }
+
+    def worker_info(self):
+        process = self.worker_process
+        crash_stats = None
+        try:
+            stat = (self.saves_dir.parent / "worker_crash.log").stat()
+            crash_stats = {"size_bytes": stat.st_size, "mtime": stat.st_mtime}
+        except OSError:
+            pass
+        return {
+            "alive": process.is_alive(),
+            "pid": process.pid,
+            "exitcode": process.exitcode,
+            "crash_log": crash_stats,
+        }
 
     def touch(self):
         self.last_activity = time.time()
@@ -433,6 +488,15 @@ class Emulator:
     def set_fast_forward(self, enabled):
         self.cmd_queue.put({"cmd": "set_fast_forward", "enabled": enabled})
         self.fast_forward = enabled
+
+    def rtc_info(self):
+        return self._send_and_wait({"cmd": "rtc_info"})
+
+    def rtc_set(self, values):
+        ack = self._send_and_wait({"cmd": "rtc_set", "values": values})
+        if not ack["ok"]:
+            raise ValueError(ack.get("error") or "rtc_set failed")
+        return ack
 
     def _broadcast_stopped(self):
         self._broadcast("stopped")
