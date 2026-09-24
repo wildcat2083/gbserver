@@ -1825,3 +1825,238 @@ body.theme-pokemon .rom-select:focus,
 body.theme-pokemon .engine-select:focus {
   outline-color: #ffffff;
 }
+
+/* ---- Button mapping (Settings) ---------------------------------------- */
+.binding-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.binding-tab {
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 2px dashed var(--gb-body-edge);
+  background: rgba(0, 0, 0, 0.06);
+  color: var(--gb-ink);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+}
+
+.binding-tab.active {
+  border-style: solid;
+  background: var(--gb-purple);
+  border-color: var(--gb-purple-dark);
+  color: #f0f0e4;
+}
+
+.binding-pad-info {
+  margin: 0 0 8px;
+}
+
+.binding-list {
+  display: grid;
+  gap: 6px;
+}
+
+.binding-row {
+  display: grid;
+  grid-template-columns: 6.5em 1fr auto;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.06);
+  border: 2px dashed var(--gb-body-edge);
+}
+
+.binding-label {
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.binding-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+}
+
+.binding-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 4px 3px 8px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.14);
+  color: var(--gb-ink);
+  font-size: 0.74rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.binding-chip.unbound {
+  padding-right: 8px;
+  background: transparent;
+  border: 1px dashed var(--gb-muted);
+  color: var(--gb-muted);
+  font-weight: 400;
+  font-style: italic;
+}
+
+.binding-remove {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--gb-muted);
+  font-size: 0.7rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.binding-remove:hover,
+.binding-remove:focus-visible {
+  background: rgba(0, 0, 0, 0.18);
+  color: var(--gb-ink);
+}
+
+.binding-add {
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: linear-gradient(180deg, #6a6a58, #404034);
+  color: #f0f0e4;
+  font-size: 0.72rem;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.binding-add:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.binding-add.capturing {
+  background: var(--gb-purple);
+  animation: binding-pulse 1s ease-in-out infinite;
+}
+
+@keyframes binding-pulse {
+  50% { filter: brightness(1.25); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .binding-add.capturing { animation: none; }
+}
+
+.binding-status {
+  min-height: 1.2em;
+}
+
+.binding-status.warn {
+  color: var(--gb-purple);
+  font-weight: 700;
+}
+
+#bindingResetBtn:disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+/* Short notice over the game, e.g. when a controller can't enter fullscreen */
+.stage-hint {
+  position: fixed;
+  left: 50%;
+  bottom: calc(24px + env(safe-area-inset-bottom, 0px));
+  z-index: 1000;
+  max-width: min(90vw, 420px);
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: rgba(20, 20, 16, 0.92);
+  color: #f0f0e4;
+  font-size: 0.8rem;
+  line-height: 1.35;
+  text-align: center;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  opacity: 0;
+  transform: translate(-50%, 8px);
+  transition: opacity 0.2s ease, transform 0.2s ease;
+  pointer-events: none;
+}
+
+.stage-hint.visible {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stage-hint { transition: none; }
+}
+
+/* ---- Settings sub-menu (bindings editor) -------------------------------- */
+/* While a sub-menu is open, it replaces the rest of the settings panel. */
+.settings-panel.subview-open > :not(.settings-subview) {
+  display: none !important;
+}
+
+.submenu-btn {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 12px;
+  border-radius: 10px;
+  border: 2px dashed var(--gb-body-edge);
+  background: rgba(0, 0, 0, 0.06);
+  color: var(--gb-ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+.submenu-btn:hover {
+  background: rgba(0, 0, 0, 0.1);
+}
+
+.submenu-btn-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.submenu-btn-title {
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
+.submenu-btn-sub {
+  font-size: 0.72rem;
+  color: var(--gb-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.submenu-btn-chevron {
+  font-size: 1.4rem;
+  line-height: 1;
+  color: var(--gb-muted);
+}
+
+.settings-back {
+  height: 36px;
+  padding: 0 12px;
+  border: none;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.12);
+  color: var(--gb-ink);
+  font-size: 0.85rem;
+  font-weight: 700;
+  cursor: pointer;
+}

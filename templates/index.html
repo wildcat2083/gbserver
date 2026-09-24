@@ -98,17 +98,19 @@
         <h3>Controls</h3>
         <ul>
           <li>D-pad, A, B, Start, Select - tap on screen, or use a keyboard/gamepad below</li>
-          <li>Keyboard: Arrow keys, Z/A = A, X/B = B, Enter/W = Start, Shift/Q = Select</li>
+          <li>Keyboard: <span data-binding="key:up">&uarr;</span> <span data-binding="key:down">&darr;</span> <span data-binding="key:left">&larr;</span> <span data-binding="key:right">&rarr;</span> = D-pad, <span data-binding="key:a">Z / A</span> = A, <span data-binding="key:b">X / B</span> = B, <span data-binding="key:start">Enter / W</span> = Start, <span data-binding="key:select">Left Shift / Right Shift / Q</span> = Select, <span data-binding="key:turbo_a">(unbound)</span> = rapid-fire A, <span data-binding="key:turbo_b">(unbound)</span> = rapid-fire B</li>
           <li>Gamepad: face buttons and d-pad map automatically once connected over Bluetooth/USB</li>
-          <li>Gamepad: press Y / Triangle to open or close this settings menu, then use the D-pad, A, and B to navigate it - the D-pad drives real game input again once the menu is closed</li>
-          <li>Gamepad: hold X / Square for rapid-fire A - repeatedly presses and releases A on its own while held, for games that need many quick taps in a row</li>
+          <li>Keyboard and gamepad buttons can be remapped in Settings &rarr; Button mapping &rarr; Keyboard &amp; controller bindings. Controller layouts are remembered per controller model</li>
+          <li>Gamepad: press <span data-binding="pad:settings">Y / Triangle</span> to open or close this settings menu, then use the D-pad, A, and B to navigate it - the D-pad drives real game input again once the menu is closed</li>
+          <li>Gamepad: <span data-binding="pad:fullscreen">(unbound)</span> toggles fullscreen - set a button for it in Settings &rarr; Button mapping &rarr; Keyboard &amp; controller bindings. Browsers only let a controller <em>exit</em> fullscreen; to enter it, double-click the game screen</li>
+          <li>Gamepad: hold <span data-binding="pad:turbo_a">X / Square</span> for rapid-fire A - repeatedly presses and releases A on its own while held, for games that need many quick taps in a row. Rapid-fire B works the same way on <span data-binding="pad:turbo_b">(unbound)</span></li>
         </ul>
       </section>
       <section class="help-section">
         <h3>Fast forward</h3>
         <ul>
-          <li>Toggle button above the D-pad, or press F1 on a keyboard</li>
-          <li>On a gamepad: RB / R1</li>
+          <li>Toggle button above the D-pad, or press <span data-binding="key:fast_forward">F1</span> on a keyboard</li>
+          <li>On a gamepad: <span data-binding="pad:fast_forward">RB / R1</span></li>
           <li>Audio is muted while fast-forwarding - this is expected, not a bug</li>
         </ul>
       </section>
@@ -116,8 +118,8 @@
         <h3>Reset</h3>
         <ul>
           <li>Restarts the current ROM completely fresh, like pressing reset on real hardware</li>
-          <li>Press the Reset button, or the * key on a keyboard (same as BGB)</li>
-          <li>On a gamepad: LB / L1</li>
+          <li>Press the Reset button, or <span data-binding="key:reset">*</span> on a keyboard (same as BGB)</li>
+          <li>On a gamepad: <span data-binding="pad:reset">LB / L1</span></li>
           <li>Doesn't touch your save file - only in-progress play since the ROM was last loaded is lost</li>
         </ul>
       </section>
@@ -207,6 +209,17 @@
         <input id="hapticToggle" type="checkbox" checked />
       </label>
       <p class="setting-help">Short tap vibrate on press (Android / supported browsers)</p>
+    </section>
+
+    <section class="settings-section" id="bindingsSection">
+      <h3>Button mapping</h3>
+      <button type="button" id="bindingsOpenBtn" class="submenu-btn" aria-controls="bindingsView">
+        <span class="submenu-btn-text">
+          <span class="submenu-btn-title">Keyboard &amp; controller bindings</span>
+          <span id="bindingsSummary" class="submenu-btn-sub">Keyboard: default &middot; Controller: none connected</span>
+        </span>
+        <span class="submenu-btn-chevron" aria-hidden="true">&rsaquo;</span>
+      </button>
     </section>
 
     <section class="settings-section">
@@ -343,6 +356,25 @@
       </div>
       <p id="stopMsg" class="upload-msg"></p>
     </section>
+
+    <div id="bindingsView" class="settings-subview" hidden>
+      <div class="settings-header">
+        <button type="button" id="bindingsBackBtn" class="settings-back" aria-label="Back to settings">&lsaquo; Back</button>
+        <h2>Bindings</h2>
+        <button type="button" id="bindingsCloseBtn" class="settings-close" aria-label="Close settings">&#10005;</button>
+      </div>
+      <div class="binding-tabs" role="tablist" aria-label="Input device">
+        <button type="button" class="binding-tab active" role="tab" aria-selected="true" data-binding-tab="key">Keyboard</button>
+        <button type="button" class="binding-tab" role="tab" aria-selected="false" data-binding-tab="pad">Controller</button>
+      </div>
+      <p id="bindingPadInfo" class="setting-help binding-pad-info" hidden></p>
+      <div id="bindingList" class="binding-list"></div>
+      <p id="bindingStatus" class="setting-help binding-status" role="status" aria-live="polite"></p>
+      <div class="btn-row">
+        <button type="button" id="bindingResetBtn" class="cart-btn secondary">Reset keyboard to defaults</button>
+      </div>
+      <p class="setting-help">Saved in this browser only. Each controller model keeps its own layout; ones you haven't customised use the standard layout. The left stick always works as the D-pad. Fullscreen is controller-only and unbound until you set it; browsers let a controller exit fullscreen but not enter it, so double-click the screen to go in. Menus follow your mapping - if you lose the settings button, the &#9881; icon and Reset to defaults still work.</p>
+    </div>
   </aside>
 
   <div id="vkeyboardBackdrop" class="settings-backdrop" hidden></div>

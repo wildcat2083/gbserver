@@ -412,18 +412,61 @@
     });
   }
 
-  function toggleFullscreen() {
-    const fsElement =
-      document.fullscreenElement || document.webkitFullscreenElement;
-    if (fsElement) {
-      (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+  function isFullscreenActive() {
+    return !!(document.fullscreenElement || document.webkitFullscreenElement);
+  }
+
+  // fromGamepad must be exactly true - the dblclick listeners pass an Event.
+  function toggleFullscreen(fromGamepad) {
+    const viaPad = fromGamepad === true;
+    if (isFullscreenActive()) {
+      const exit = document.exitFullscreen || document.webkitExitFullscreen;
+      if (exit) Promise.resolve(exit.call(document)).catch(() => {});
       return;
     }
     const request = gameStage.requestFullscreen || gameStage.webkitRequestFullscreen;
-    if (request) {
-      request.call(gameStage).catch(() => {
-      });
+    if (!request) {
+      if (viaPad) showStageHint("Fullscreen isn't supported in this browser.");
+      return;
     }
+    // Browsers only allow *entering* fullscreen from a click, tap or key press;
+    // controller buttons don't count as one, so a pad request is usually
+    // refused. Exiting has no such rule, so the pad can always leave it.
+    const refused = () => {
+      if (viaPad) {
+        showStageHint("Your browser only allows entering fullscreen from a click or tap \u2013 double-click the game screen. Your controller can still exit it.");
+      }
+    };
+    let result;
+    try {
+      result = request.call(gameStage);
+    } catch (_) {
+      refused();
+      return;
+    }
+    if (result && typeof result.then === "function") {
+      result.catch(refused);
+    } else {
+      // Older Safari: no promise, it just fires webkitfullscreenerror.
+      setTimeout(() => { if (!isFullscreenActive()) refused(); }, 400);
+    }
+  }
+
+  let stageHintTimer = null;
+  function showStageHint(text) {
+    let el = document.getElementById("stageHint");
+    if (!el) {
+      el = document.createElement("div");
+      el.id = "stageHint";
+      el.className = "stage-hint";
+      el.setAttribute("role", "status");
+      el.setAttribute("aria-live", "polite");
+      gameStage.appendChild(el);
+    }
+    el.textContent = text;
+    el.classList.add("visible");
+    if (stageHintTimer) clearTimeout(stageHintTimer);
+    stageHintTimer = setTimeout(() => el.classList.remove("visible"), 5000);
   }
 
   let controlsHidden = false;
@@ -1027,78 +1070,306 @@
     document.addEventListener("pointercancel", handlePointerEnd);
   }
 
-  const KEY_MAP = {
-    ArrowUp: "up", ArrowDown: "down", ArrowLeft: "left", ArrowRight: "right",
-    KeyZ: "a", KeyA: "a",
-    KeyX: "b", KeyB: "b",
-    ShiftLeft: "select", ShiftRight: "select", KeyQ: "select",
-    Enter: "start", KeyW: "start",
+  // ---- button mapping -----------------------------------------------------------
+  // Keyboard and controller bindings are user-remappable (Settings -> Button
+  // mapping) and stored in this browser only. The server only ever receives
+  // logical Game Boy button names, so none of this touches the emulator.
+  const GB_BUTTONS = ["up", "down", "left", "right", "a", "b", "start", "select"];
+  const GB_BUTTON_SET = new Set(GB_BUTTONS);
+  const NAV_ACTIONS = ["up", "down", "left", "right", "a", "b"];
+  const MAPPABLE_ACTIONS = [
+    { id: "up", label: "Up" },
+    { id: "down", label: "Down" },
+    { id: "left", label: "Left" },
+    { id: "right", label: "Right" },
+    { id: "a", label: "A" },
+    { id: "b", label: "B" },
+    { id: "start", label: "Start" },
+    { id: "select", label: "Select" },
+    { id: "turbo_a", label: "Turbo A" },
+    { id: "turbo_b", label: "Turbo B" },
+    { id: "fast_forward", label: "Fast forward" },
+    { id: "reset", label: "Reset" },
+    { id: "settings", label: "Settings menu", padOnly: true },
+    { id: "fullscreen", label: "Fullscreen", padOnly: true },
+  ];
+  const ACTION_LABELS = Object.fromEntries(MAPPABLE_ACTIONS.map((a) => [a.id, a.label]));
+  // Turbo actions and the Game Boy button each one rapid-fires.
+  const TURBO_ACTIONS = { turbo_a: "a", turbo_b: "b" };
+
+  // Defaults are exactly the bindings that used to be hard-coded.
+  const DEFAULT_KEY_BINDINGS = {
+    up: ["ArrowUp"], down: ["ArrowDown"], left: ["ArrowLeft"], right: ["ArrowRight"],
+    a: ["KeyZ", "KeyA"], b: ["KeyX", "KeyB"],
+    start: ["Enter", "KeyW"], select: ["ShiftLeft", "ShiftRight", "KeyQ"],
+    turbo_a: [], turbo_b: [], fast_forward: ["F1"], reset: ["NumpadMultiply"],
   };
-  const heldKeys = new Set();
+  const DEFAULT_PAD_BINDINGS = {
+    up: [12], down: [13], left: [14], right: [15],
+    a: [0], b: [1], start: [9], select: [8],
+    turbo_a: [2], turbo_b: [], fast_forward: [5], reset: [4], settings: [3],
+    fullscreen: [],
+  };
+  const MAX_KEY_BINDINGS = 3;
+  const MAX_PAD_BINDINGS = 2;
+  const KEY_BINDINGS_KEY = "gbserver.keyBindings";
+  const PAD_BINDINGS_KEY = "gbserver.padBindings";
+  const BINDING_CAPTURE_TIMEOUT_MS = 6000;
+
+  function isValidKeyCode(v) {
+    // Escape is reserved for cancelling a rebind.
+    return typeof v === "string" && /^[A-Za-z0-9]{1,32}$/.test(v) && v !== "Escape";
+  }
+  function isValidPadIndex(v) {
+    return Number.isInteger(v) && v >= 0 && v < 32;
+  }
+  function cloneBindings(b) {
+    const out = {};
+    for (const k of Object.keys(b)) out[k] = b[k].slice();
+    return out;
+  }
+  function bindingsEqual(a, b) {
+    return a.length === b.length && a.every((v, i) => v === b[i]);
+  }
+
+  // Validate whatever came out of localStorage: drop unknown actions, invalid
+  // or duplicate inputs, cap list lengths. An action missing from a saved
+  // mapping (e.g. one added in a later version) gets its default inputs,
+  // minus any the user has already bound elsewhere.
+  function sanitizeBindings(raw, defaults, isValid, max) {
+    const out = {};
+    const used = new Set();
+    for (const action of Object.keys(defaults)) {
+      const list = raw && typeof raw === "object" && Array.isArray(raw[action]) ? raw[action] : null;
+      if (!list) { out[action] = null; continue; }
+      out[action] = [];
+      for (const v of list) {
+        if (out[action].length >= max) break;
+        if (isValid(v) && !used.has(v)) { out[action].push(v); used.add(v); }
+      }
+    }
+    for (const action of Object.keys(defaults)) {
+      if (out[action] !== null) continue;
+      out[action] = defaults[action].filter((v) => !used.has(v));
+      out[action].forEach((v) => used.add(v));
+    }
+    return out;
+  }
+
+  function readJsonSetting(key) {
+    try {
+      return JSON.parse(localStorage.getItem(key) || "null");
+    } catch (_) {
+      return null;
+    }
+  }
+  function writeJsonSetting(key, value) {
+    try {
+      if (value === null) localStorage.removeItem(key);
+      else localStorage.setItem(key, JSON.stringify(value));
+    } catch (_) {   }
+  }
+
+  let keyBindings = (() => {
+    const saved = readJsonSetting(KEY_BINDINGS_KEY);
+    return sanitizeBindings(saved && saved.bindings, DEFAULT_KEY_BINDINGS, isValidKeyCode, MAX_KEY_BINDINGS);
+  })();
+  let keyLookup = new Map();
+  function rebuildKeyLookup() {
+    keyLookup = new Map();
+    for (const [action, codes] of Object.entries(keyBindings)) {
+      for (const code of codes) keyLookup.set(code, action);
+    }
+  }
+  rebuildKeyLookup();
+
+  // Controller layouts are saved per controller model (vendor:product ID),
+  // so an 8BitDo and a DualSense can each have their own. A controller with
+  // no saved layout uses DEFAULT_PAD_BINDINGS.
+  const padProfiles = (() => {
+    const saved = readJsonSetting(PAD_BINDINGS_KEY);
+    return saved && saved.pads && typeof saved.pads === "object" ? saved.pads : {};
+  })();
+  let activePadProfile = null;
+  let activePadName = "";
+  let activePadStandard = true;
+  let padBindings = cloneBindings(DEFAULT_PAD_BINDINGS);
+
+  function parseControllerVidPid(rawId) {
+    const m = (rawId || "").match(/Vendor:\s*([0-9a-fA-F]{4})\s+Product:\s*([0-9a-fA-F]{4})/i)
+            || (rawId || "").match(/^([0-9a-fA-F]{4})-([0-9a-fA-F]{4})-?/);
+    return m ? { vid: m[1].toLowerCase(), pid: m[2].toLowerCase() } : null;
+  }
+  function controllerProfileKey(rawId) {
+    const ids = parseControllerVidPid(rawId);
+    if (ids) return ids.vid + ":" + ids.pid;
+    return "id:" + (rawId || "unknown").slice(0, 120);
+  }
+  function loadPadBindingsFor(pad) {
+    if (!pad) {
+      activePadProfile = null;
+      activePadName = "";
+      activePadStandard = true;
+      padBindings = cloneBindings(DEFAULT_PAD_BINDINGS);
+      return;
+    }
+    activePadProfile = controllerProfileKey(pad.id);
+    activePadName = resolveControllerName(pad.id || "");
+    activePadStandard = pad.mapping === "standard";
+    const saved = padProfiles[activePadProfile];
+    padBindings = saved
+      ? sanitizeBindings(saved.bindings, DEFAULT_PAD_BINDINGS, isValidPadIndex, MAX_PAD_BINDINGS)
+      : cloneBindings(DEFAULT_PAD_BINDINGS);
+  }
+  function padHasCustomProfile() {
+    return !!(activePadProfile && padProfiles[activePadProfile]);
+  }
+  function padActionDown(pad, action) {
+    const list = padBindings[action];
+    if (!list) return false;
+    for (const i of list) {
+      const b = pad.buttons[i];
+      if (b && b.pressed) return true;
+    }
+    return false;
+  }
+
+  function saveKeyBindings() {
+    const isDefault = Object.keys(DEFAULT_KEY_BINDINGS)
+      .every((a) => bindingsEqual(keyBindings[a], DEFAULT_KEY_BINDINGS[a]));
+    writeJsonSetting(KEY_BINDINGS_KEY, isDefault ? null : { version: 1, bindings: keyBindings });
+    rebuildKeyLookup();
+  }
+  function savePadBindings() {
+    if (!activePadProfile) return;
+    const isDefault = Object.keys(DEFAULT_PAD_BINDINGS)
+      .every((a) => bindingsEqual(padBindings[a], DEFAULT_PAD_BINDINGS[a]));
+    if (isDefault) delete padProfiles[activePadProfile];
+    else padProfiles[activePadProfile] = { name: activePadName, bindings: padBindings };
+    writeJsonSetting(PAD_BINDINGS_KEY, Object.keys(padProfiles).length ? { version: 1, pads: padProfiles } : null);
+  }
+
+  // Bind `input` to `action`, taking it away from whichever action had it.
+  function assignBinding(bindings, action, input, max) {
+    let movedFrom = null;
+    for (const [other, list] of Object.entries(bindings)) {
+      const i = list.indexOf(input);
+      if (i === -1) continue;
+      if (other === action) return { unchanged: true };
+      list.splice(i, 1);
+      movedFrom = other;
+    }
+    const list = bindings[action];
+    const dropped = list.length >= max ? list.shift() : null;
+    list.push(input);
+    return { movedFrom, dropped };
+  }
+
+  // ---- keyboard input -------------------------------------------------------------
+  // heldKeyActions remembers which action each physical key pressed, so its
+  // release always matches its press even if the bindings change mid-hold.
+  // keyPressCount lets two keys bound to the same button (Z and A) be held
+  // together without the first release letting go of the button.
+  const heldKeyActions = new Map();
+  const keyPressCount = new Map();
+  const keyTurbo = { a: { timer: null, on: false }, b: { timer: null, on: false } };
+
+  function isTypingTarget() {
+    const tag = document.activeElement && document.activeElement.tagName;
+    return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+  }
+
+  function keyActionFor(e) {
+    const action = keyLookup.get(e.code);
+    if (action) return action;
+    // "*" typed as Shift+8 on a laptop keyboard still resets (same as BGB),
+    // as long as Reset hasn't been remapped.
+    if (e.key === "*" && bindingsEqual(keyBindings.reset, DEFAULT_KEY_BINDINGS.reset)) return "reset";
+    return null;
+  }
+  function gbButtonForKey(code) {
+    const action = keyLookup.get(code);
+    return action && GB_BUTTON_SET.has(action) ? action : null;
+  }
+
+  function keyboardPress(name) {
+    const n = keyPressCount.get(name) || 0;
+    keyPressCount.set(name, n + 1);
+    if (n === 0) sendInput("press", name);
+  }
+  function keyboardRelease(name) {
+    const n = keyPressCount.get(name) || 0;
+    if (n <= 1) {
+      keyPressCount.delete(name);
+      if (n === 1 && !(keyTurbo[name] && keyTurbo[name].on)) sendInput("release", name);
+    } else {
+      keyPressCount.set(name, n - 1);
+    }
+  }
+
+  function keyboardTurboTick(btn) {
+    const t = keyTurbo[btn];
+    if (keyPressCount.get(btn)) return;
+    t.on = !t.on;
+    sendInput(t.on ? "press" : "release", btn);
+  }
+  function startKeyboardTurbo(btn) {
+    const t = keyTurbo[btn];
+    if (t.timer) return;
+    keyboardTurboTick(btn);
+    t.timer = setInterval(() => keyboardTurboTick(btn), TURBO_INTERVAL_MS);
+  }
+  function stopKeyboardTurbo(btn) {
+    const t = keyTurbo[btn];
+    if (t.timer) clearInterval(t.timer);
+    t.timer = null;
+    if (t.on) {
+      t.on = false;
+      if (!keyPressCount.get(btn)) sendInput("release", btn);
+    }
+  }
+
+  function releaseAllKeyboardInput() {
+    for (const btn of Object.keys(keyTurbo)) stopKeyboardTurbo(btn);
+    for (const name of keyPressCount.keys()) sendInput("release", name);
+    keyPressCount.clear();
+    heldKeyActions.clear();
+  }
 
   function bindKeyboard() {
     window.addEventListener("keydown", (e) => {
-      const tag = document.activeElement && document.activeElement.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
-      if (e.code === "F1") {
-        e.preventDefault();
-        if (!heldKeys.has(e.code)) {
-          heldKeys.add(e.code);
-          toggleFastForward();
-        }
-        return;
-      }
-      if (e.key === "*") {
-        e.preventDefault();
-        if (!heldKeys.has(e.code)) {
-          heldKeys.add(e.code);
-          triggerReset();
-        }
-        return;
-      }
-      const btn = KEY_MAP[e.code];
-      if (!btn || heldKeys.has(e.code)) return;
+      if (isTypingTarget()) return;
+      const action = keyActionFor(e);
+      if (!action) return;
       e.preventDefault();
-      heldKeys.add(e.code);
-      sendInput("press", btn);
-      startAudioAndHideHint();
+      if (heldKeyActions.has(e.code)) return;
+      heldKeyActions.set(e.code, action);
+      if (action === "fast_forward") {
+        toggleFastForward();
+      } else if (action === "reset") {
+        triggerReset();
+      } else if (TURBO_ACTIONS[action]) {
+        startKeyboardTurbo(TURBO_ACTIONS[action]);
+        startAudioAndHideHint();
+      } else if (GB_BUTTON_SET.has(action)) {
+        keyboardPress(action);
+        startAudioAndHideHint();
+      }
     });
+    // Not gated on isTypingTarget(): a key pressed before focus moved into a
+    // text field must still be released, or the button stays stuck down.
     window.addEventListener("keyup", (e) => {
-      const tag = document.activeElement && document.activeElement.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
-      if (e.code === "F1") {
-        e.preventDefault();
-        heldKeys.delete(e.code);
-        return;
-      }
-      if (e.key === "*") {
-        e.preventDefault();
-        heldKeys.delete(e.code);
-        return;
-      }
-      const btn = KEY_MAP[e.code];
-      if (!btn) return;
+      const action = heldKeyActions.get(e.code);
+      if (action === undefined) return;
       e.preventDefault();
-      heldKeys.delete(e.code);
-      sendInput("release", btn);
+      heldKeyActions.delete(e.code);
+      if (TURBO_ACTIONS[action]) stopKeyboardTurbo(TURBO_ACTIONS[action]);
+      else if (GB_BUTTON_SET.has(action)) keyboardRelease(action);
     });
+    window.addEventListener("blur", releaseAllKeyboardInput);
   }
 
-  const GAMEPAD_BUTTON_MAP = {
-    0: "a",
-    1: "b",
-    8: "select",
-    9: "start",
-    12: "up",
-    13: "down",
-    14: "left",
-    15: "right",
-  };
   const STICK_DEADZONE = 0.5;
-  const FAST_FORWARD_GAMEPAD_BUTTON = 5;
-  const RESET_GAMEPAD_BUTTON = 4;
-  const SETTINGS_GAMEPAD_BUTTON = 3;
-  const TURBO_A_GAMEPAD_BUTTON = 2;
   const TURBO_INTERVAL_MS = 100;
 
   let gamepadIndex = null;
@@ -1108,8 +1379,12 @@
   let ffGamepadWasPressed = false;
   let resetGamepadWasPressed = false;
   let settingsGamepadWasPressed = false;
-  let turboAPhaseOn = false;
-  let turboALastToggleTime = 0;
+  let fullscreenGamepadWasPressed = false;
+  const padTurbo = { a: { on: false, last: 0 }, b: { on: false, last: 0 } };
+  // Set after a controller rebind: ignore the pad until every button is
+  // released, so the press that was just captured doesn't also fire its new
+  // action (or re-open the rebind prompt it came from).
+  let padSuppressUntilRelease = false;
   const menuNavWasPressed = { up: false, down: false, left: false, right: false, a: false, b: false };
   const konamiGamepadWasPressed = { up: false, down: false, left: false, right: false, a: false, b: false };
   const vkeyGamepadWasPressed = { up: false, down: false, left: false, right: false, a: false, b: false };
@@ -1459,14 +1734,11 @@
 
   function resolveControllerName(rawId) {
     if (!rawId) return "Unknown controller";
-    const m = rawId.match(/Vendor:\s*([0-9a-fA-F]{4})\s+Product:\s*([0-9a-fA-F]{4})/i)
-            || rawId.match(/^([0-9a-fA-F]{4})-([0-9a-fA-F]{4})-?/);
-    if (m) {
-      const vid = m[1].toLowerCase();
-      const pid = m[2].toLowerCase();
-      const key = vid + ":" + pid;
+    const ids = parseControllerVidPid(rawId);
+    if (ids) {
+      const key = ids.vid + ":" + ids.pid;
       if (GAMEPAD_NAMES[key]) return GAMEPAD_NAMES[key];
-      if (GAMEPAD_BRANDS[vid]) return GAMEPAD_BRANDS[vid];
+      if (GAMEPAD_BRANDS[ids.vid]) return GAMEPAD_BRANDS[ids.vid];
     }
     const prefix = rawId.split("(")[0].trim();
     if (GENERIC_GAMEPAD_IDS.has(prefix.toLowerCase())) return "Unknown controller";
@@ -1479,18 +1751,31 @@
     previousStatusText = statusEl.textContent;
     statusEl.title = pad.id || "";
     setStatus(`Linked \u00b7 ${resolveControllerName(pad.id || "")}`, true);
+    loadPadBindingsFor(pad);
+    // Whatever is held at the moment of connecting shouldn't count as a press.
+    padSuppressUntilRelease = true;
+    refreshBindingViews();
     startAudioAndHideHint();
   }
 
   function handleGamepadConnected(e) {
+    if (gamepadIndex !== null && gamepadIndex !== e.gamepad.index) releaseAllGamepadInput();
     adoptGamepad(e.gamepad);
+  }
+
+  function releaseAllGamepadInput() {
+    for (const name of gamepadHeld) sendInput("release", name);
+    gamepadHeld.clear();
+    for (const t of Object.values(padTurbo)) t.on = false;
   }
 
   function dropActiveGamepad() {
     gamepadMissingFrames = 0;
     gamepadIndex = null;
-    for (const name of gamepadHeld) sendInput("release", name);
-    gamepadHeld.clear();
+    releaseAllGamepadInput();
+    if (bindingCapture && bindingCapture.kind === "pad") cancelBindingCapture("Controller disconnected - nothing changed.");
+    loadPadBindingsFor(null);
+    refreshBindingViews();
     statusEl.title = "";
     setStatus(previousStatusText || "Not connected", false);
   }
@@ -1514,6 +1799,107 @@
     sendInput("release", name);
   }
 
+  // Edge-triggered menu navigation on the (remapped) D-pad, A and B.
+  function padMenuNav(pad, wasPressed, handlers) {
+    for (const action of NAV_ACTIONS) {
+      const isDown = padActionDown(pad, action);
+      if (isDown && !wasPressed[action]) handlers[action]();
+      wasPressed[action] = isDown;
+    }
+  }
+
+  function processPad(pad) {
+    if (padSuppressUntilRelease) {
+      if (pad.buttons.some((b) => b && b.pressed)) return;
+      padSuppressUntilRelease = false;
+      for (const flags of [menuNavWasPressed, konamiGamepadWasPressed, vkeyGamepadWasPressed, cheatNavWasPressed]) {
+        for (const k of Object.keys(flags)) flags[k] = false;
+      }
+      ffGamepadWasPressed = resetGamepadWasPressed = settingsGamepadWasPressed = fullscreenGamepadWasPressed = false;
+    }
+
+    const settingsIsDown = padActionDown(pad, "settings");
+    if (settingsIsDown && !settingsGamepadWasPressed) setSettingsOpen(!settingsOpen);
+    settingsGamepadWasPressed = settingsIsDown;
+
+    for (const action of NAV_ACTIONS) {
+      const isDown = padActionDown(pad, action);
+      if (isDown && !konamiGamepadWasPressed[action]) feedKonamiBuffer(action);
+      konamiGamepadWasPressed[action] = isDown;
+    }
+
+    if (isVkeyboardOpen()) {
+      releaseAllGamepadInput();
+      padMenuNav(pad, vkeyGamepadWasPressed, {
+        up: () => moveVkeyFocus(-1, 0),
+        down: () => moveVkeyFocus(1, 0),
+        left: () => moveVkeyFocus(0, -1),
+        right: () => moveVkeyFocus(0, 1),
+        a: () => pressVkeyFocused(),
+        b: () => closeVirtualKeyboard(),
+      });
+    } else if (settingsOpen) {
+      releaseAllGamepadInput();
+      padMenuNav(pad, menuNavWasPressed, {
+        up: () => moveSettingsFocus(-1),
+        down: () => moveSettingsFocus(1),
+        left: () => adjustFocusedSettingsElement(-1),
+        right: () => adjustFocusedSettingsElement(1),
+        a: () => activateFocusedSettingsElement(),
+        b: () => (bindingsViewOpen ? closeBindingsView() : setSettingsOpen(false)),
+      });
+    } else if (cheatPanelOpen) {
+      releaseAllGamepadInput();
+      padMenuNav(pad, cheatNavWasPressed, {
+        up: () => moveCheatFocus(-1, 0),
+        down: () => moveCheatFocus(1, 0),
+        left: () => moveCheatFocus(0, -1),
+        right: () => moveCheatFocus(0, 1),
+        a: () => activateFocusedElementIn(cheatPanel),
+        b: () => setCheatPanelOpen(false),
+      });
+    } else {
+      // The left stick always mirrors the D-pad, whatever the D-pad is bound to.
+      const x = pad.axes[0] || 0;
+      const y = pad.axes[1] || 0;
+      const stick = {
+        up: y < -STICK_DEADZONE, down: y > STICK_DEADZONE,
+        left: x < -STICK_DEADZONE, right: x > STICK_DEADZONE,
+      };
+
+      const now = performance.now();
+      for (const [action, btn] of Object.entries(TURBO_ACTIONS)) {
+        const t = padTurbo[btn];
+        if (padActionDown(pad, action)) {
+          if (now - t.last >= TURBO_INTERVAL_MS) {
+            t.last = now;
+            t.on = !t.on;
+          }
+        } else {
+          t.on = false;
+        }
+      }
+
+      for (const name of GB_BUTTONS) {
+        const down = padActionDown(pad, name) || !!stick[name] || !!(padTurbo[name] && padTurbo[name].on);
+        if (down) pressLogical(name);
+        else releaseLogical(name);
+      }
+    }
+
+    const ffIsDown = padActionDown(pad, "fast_forward");
+    if (ffIsDown && !ffGamepadWasPressed) toggleFastForward();
+    ffGamepadWasPressed = ffIsDown;
+
+    const resetIsDown = padActionDown(pad, "reset");
+    if (resetIsDown && !resetGamepadWasPressed) triggerReset();
+    resetGamepadWasPressed = resetIsDown;
+
+    const fullscreenIsDown = padActionDown(pad, "fullscreen");
+    if (fullscreenIsDown && !fullscreenGamepadWasPressed) toggleFullscreen(true);
+    fullscreenGamepadWasPressed = fullscreenIsDown;
+  }
+
   function pollGamepad() {
     const pads = navigator.getGamepads ? navigator.getGamepads() : [];
     if (gamepadIndex !== null) {
@@ -1523,103 +1909,8 @@
         if (++gamepadMissingFrames >= 3) dropActiveGamepad();
       } else {
         gamepadMissingFrames = 0;
-        const settingsBtnState = pad.buttons[SETTINGS_GAMEPAD_BUTTON];
-        const settingsIsDown = !!settingsBtnState && settingsBtnState.pressed;
-        if (settingsIsDown && !settingsGamepadWasPressed) setSettingsOpen(!settingsOpen);
-        settingsGamepadWasPressed = settingsIsDown;
-
-        const konamiButtons = { up: 12, down: 13, left: 14, right: 15, a: 0, b: 1 };
-        for (const [action, idx] of Object.entries(konamiButtons)) {
-          const btn = pad.buttons[idx];
-          const isDown = !!btn && btn.pressed;
-          if (isDown && !konamiGamepadWasPressed[action]) feedKonamiBuffer(action);
-          konamiGamepadWasPressed[action] = isDown;
-        }
-
-        if (isVkeyboardOpen()) {
-          const navButtons = { up: 12, down: 13, left: 14, right: 15, a: 0, b: 1 };
-          for (const [action, idx] of Object.entries(navButtons)) {
-            const btn = pad.buttons[idx];
-            const isDown = !!btn && btn.pressed;
-            if (isDown && !vkeyGamepadWasPressed[action]) {
-              if (action === "up") moveVkeyFocus(-1, 0);
-              else if (action === "down") moveVkeyFocus(1, 0);
-              else if (action === "left") moveVkeyFocus(0, -1);
-              else if (action === "right") moveVkeyFocus(0, 1);
-              else if (action === "a") pressVkeyFocused();
-              else if (action === "b") closeVirtualKeyboard();
-            }
-            vkeyGamepadWasPressed[action] = isDown;
-          }
-        } else if (settingsOpen) {
-          const navButtons = { up: 12, down: 13, left: 14, right: 15, a: 0, b: 1 };
-          for (const [action, idx] of Object.entries(navButtons)) {
-            const btn = pad.buttons[idx];
-            const isDown = !!btn && btn.pressed;
-            if (isDown && !menuNavWasPressed[action]) {
-              if (action === "up") moveSettingsFocus(-1);
-              else if (action === "down") moveSettingsFocus(1);
-              else if (action === "left") adjustFocusedSettingsElement(-1);
-              else if (action === "right") adjustFocusedSettingsElement(1);
-              else if (action === "a") activateFocusedSettingsElement();
-              else if (action === "b") setSettingsOpen(false);
-            }
-            menuNavWasPressed[action] = isDown;
-          }
-        } else if (cheatPanelOpen) {
-          const navButtons = { up: 12, down: 13, left: 14, right: 15, a: 0, b: 1 };
-          for (const [action, idx] of Object.entries(navButtons)) {
-            const btn = pad.buttons[idx];
-            const isDown = !!btn && btn.pressed;
-            if (isDown && !cheatNavWasPressed[action]) {
-              if (action === "up") moveCheatFocus(-1, 0);
-              else if (action === "down") moveCheatFocus(1, 0);
-              else if (action === "left") moveCheatFocus(0, -1);
-              else if (action === "right") moveCheatFocus(0, 1);
-              else if (action === "a") activateFocusedElementIn(cheatPanel);
-              else if (action === "b") setCheatPanelOpen(false);
-            }
-            cheatNavWasPressed[action] = isDown;
-          }
-        } else {
-          for (const [idx, name] of Object.entries(GAMEPAD_BUTTON_MAP)) {
-            const btn = pad.buttons[idx];
-            const isDown = !!btn && btn.pressed;
-            if (isDown) pressLogical(name);
-            else releaseLogical(name);
-          }
-
-          const x = pad.axes[0] || 0;
-          const y = pad.axes[1] || 0;
-          if (y < -STICK_DEADZONE) pressLogical("up"); else if (!pad.buttons[12] || !pad.buttons[12].pressed) releaseLogical("up");
-          if (y > STICK_DEADZONE) pressLogical("down"); else if (!pad.buttons[13] || !pad.buttons[13].pressed) releaseLogical("down");
-          if (x < -STICK_DEADZONE) pressLogical("left"); else if (!pad.buttons[14] || !pad.buttons[14].pressed) releaseLogical("left");
-          if (x > STICK_DEADZONE) pressLogical("right"); else if (!pad.buttons[15] || !pad.buttons[15].pressed) releaseLogical("right");
-
-          const turboBtn = pad.buttons[TURBO_A_GAMEPAD_BUTTON];
-          const turboIsDown = !!turboBtn && turboBtn.pressed;
-          if (turboIsDown) {
-            const now = performance.now();
-            if (now - turboALastToggleTime >= TURBO_INTERVAL_MS) {
-              turboALastToggleTime = now;
-              turboAPhaseOn = !turboAPhaseOn;
-              if (turboAPhaseOn) pressLogical("a"); else releaseLogical("a");
-            }
-          } else if (turboAPhaseOn) {
-            turboAPhaseOn = false;
-            releaseLogical("a");
-          }
-        }
-
-        const ffBtn = pad.buttons[FAST_FORWARD_GAMEPAD_BUTTON];
-        const ffIsDown = !!ffBtn && ffBtn.pressed;
-        if (ffIsDown && !ffGamepadWasPressed) toggleFastForward();
-        ffGamepadWasPressed = ffIsDown;
-
-        const resetBtn = pad.buttons[RESET_GAMEPAD_BUTTON];
-        const resetIsDown = !!resetBtn && resetBtn.pressed;
-        if (resetIsDown && !resetGamepadWasPressed) triggerReset();
-        resetGamepadWasPressed = resetIsDown;
+        if (bindingCapture && bindingCapture.kind === "pad") pollPadBindingCapture(pad);
+        else processPad(pad);
       }
     } else {
       for (let i = 0; i < pads.length; i++) {
@@ -1637,6 +1928,363 @@
     window.addEventListener("gamepadconnected", handleGamepadConnected);
     window.addEventListener("gamepaddisconnected", handleGamepadDisconnected);
     requestAnimationFrame(pollGamepad);
+  }
+
+  // ---- button mapping UI ------------------------------------------------------------
+  const PAD_BUTTON_LABELS = [
+    "A / Cross", "B / Circle", "X / Square", "Y / Triangle",
+    "LB / L1", "RB / R1", "LT / L2", "RT / R2",
+    "Back / Select", "Start", "Left stick click", "Right stick click",
+    "D-pad Up", "D-pad Down", "D-pad Left", "D-pad Right",
+    "Home / Guide", "Touchpad",
+  ];
+  const KEY_LABEL_OVERRIDES = {
+    ArrowUp: "\u2191", ArrowDown: "\u2193", ArrowLeft: "\u2190", ArrowRight: "\u2192",
+    ShiftLeft: "Left Shift", ShiftRight: "Right Shift",
+    ControlLeft: "Left Ctrl", ControlRight: "Right Ctrl",
+    AltLeft: "Left Alt", AltRight: "Right Alt",
+    MetaLeft: "Left Meta", MetaRight: "Right Meta",
+    NumpadMultiply: "Num *", NumpadAdd: "Num +", NumpadSubtract: "Num -",
+    NumpadDivide: "Num /", NumpadDecimal: "Num .", NumpadEnter: "Num Enter",
+  };
+  let keyboardLayoutMap = null;
+
+  function keyLabel(code) {
+    if (KEY_LABEL_OVERRIDES[code]) return KEY_LABEL_OVERRIDES[code];
+    // Show what's actually printed on the key (AZERTY, Dvorak...) when the
+    // browser can tell us; bindings themselves are by physical position.
+    if (keyboardLayoutMap && keyboardLayoutMap.has(code)) {
+      const ch = keyboardLayoutMap.get(code);
+      if (ch && ch.trim()) return ch.toUpperCase();
+    }
+    let m;
+    if ((m = code.match(/^Key([A-Z])$/))) return m[1];
+    if ((m = code.match(/^Digit(\d)$/))) return m[1];
+    if ((m = code.match(/^Numpad(\d)$/))) return "Num " + m[1];
+    return code;
+  }
+  function padButtonLabel(index) {
+    return (activePadStandard && PAD_BUTTON_LABELS[index]) || `Button ${index}`;
+  }
+  function inputLabel(kind, input) {
+    return kind === "key" ? keyLabel(input) : padButtonLabel(input);
+  }
+
+  let bindingTab = "key";
+  let bindingCapture = null;   // { kind, action, armed, timer }
+  let bindingStatusTimer = null;
+
+  function setBindingStatus(text, isWarning) {
+    const el = document.getElementById("bindingStatus");
+    if (!el) return;
+    el.textContent = text || "";
+    el.classList.toggle("warn", !!isWarning);
+    if (bindingStatusTimer) clearTimeout(bindingStatusTimer);
+    bindingStatusTimer = text && !bindingCapture ? setTimeout(() => { el.textContent = ""; }, 6000) : null;
+  }
+
+  function startBindingCapture(kind, action) {
+    cancelBindingCapture();
+    if (kind === "pad" && gamepadIndex === null) return;
+    // Let go of everything first - the bindings are about to change under it.
+    releaseAllKeyboardInput();
+    releaseAllGamepadInput();
+    bindingCapture = {
+      kind,
+      action,
+      // A controller capture only starts listening once every button is up,
+      // so the A press that opened this prompt isn't captured as the answer.
+      armed: kind === "key",
+      timer: setTimeout(() => cancelBindingCapture("Timed out - nothing changed."), BINDING_CAPTURE_TIMEOUT_MS),
+    };
+    setBindingStatus(kind === "key"
+      ? `Press a key for ${ACTION_LABELS[action]}\u2026 (Esc to cancel)`
+      : `Press a controller button for ${ACTION_LABELS[action]}\u2026 (Esc to cancel)`);
+    renderBindingList();
+    focusBindingControl(action, "add");
+  }
+
+  function cancelBindingCapture(message) {
+    if (!bindingCapture) return;
+    const { action } = bindingCapture;
+    clearTimeout(bindingCapture.timer);
+    bindingCapture = null;
+    renderBindingList();
+    focusBindingControl(action, "add");
+    setBindingStatus(message || "");
+  }
+
+  function finishBindingCapture(input) {
+    const { kind, action } = bindingCapture;
+    clearTimeout(bindingCapture.timer);
+    bindingCapture = null;
+    if (kind === "pad") padSuppressUntilRelease = true;
+
+    const bindings = kind === "key" ? keyBindings : padBindings;
+    const result = assignBinding(bindings, action, input, kind === "key" ? MAX_KEY_BINDINGS : MAX_PAD_BINDINGS);
+    const label = inputLabel(kind, input);
+    let message;
+    let warn = false;
+    if (result.unchanged) {
+      message = `${label} is already bound to ${ACTION_LABELS[action]}.`;
+    } else {
+      if (kind === "key") saveKeyBindings();
+      else savePadBindings();
+      message = result.movedFrom
+        ? `${label} moved from ${ACTION_LABELS[result.movedFrom]} to ${ACTION_LABELS[action]}.`
+        : `${label} is now ${ACTION_LABELS[action]}.`;
+      if (result.movedFrom && bindings[result.movedFrom].length === 0) {
+        message += ` ${ACTION_LABELS[result.movedFrom]} has no ${kind === "key" ? "key" : "button"} now.`;
+        warn = true;
+      }
+    }
+    refreshBindingViews();
+    focusBindingControl(action, "add");
+    setBindingStatus(message, warn);
+  }
+
+  function pollPadBindingCapture(pad) {
+    const pressed = pad.buttons.findIndex((b) => b && b.pressed);
+    if (!bindingCapture.armed) {
+      if (pressed === -1) bindingCapture.armed = true;
+      return;
+    }
+    if (pressed !== -1) finishBindingCapture(pressed);
+  }
+
+  function removeBinding(kind, action, input) {
+    const bindings = kind === "key" ? keyBindings : padBindings;
+    const list = bindings[action];
+    const i = list.indexOf(input);
+    if (i === -1) return;
+    releaseAllKeyboardInput();
+    releaseAllGamepadInput();
+    list.splice(i, 1);
+    if (kind === "key") saveKeyBindings();
+    else savePadBindings();
+    refreshBindingViews();
+    const empty = list.length === 0;
+    setBindingStatus(
+      `Removed ${inputLabel(kind, input)} from ${ACTION_LABELS[action]}.` +
+        (empty ? ` ${ACTION_LABELS[action]} has no ${kind === "key" ? "key" : "button"} now.` : ""),
+      empty,
+    );
+    focusBindingControl(action, list.length ? "remove" : "add");
+  }
+
+  function resetBindingsForTab() {
+    cancelBindingCapture();
+    releaseAllKeyboardInput();
+    releaseAllGamepadInput();
+    if (bindingTab === "key") {
+      keyBindings = cloneBindings(DEFAULT_KEY_BINDINGS);
+      saveKeyBindings();
+      setBindingStatus("Keyboard reset to the default layout.");
+    } else if (activePadProfile) {
+      padBindings = cloneBindings(DEFAULT_PAD_BINDINGS);
+      savePadBindings();
+      setBindingStatus(`${activePadName} reset to the standard layout.`);
+    }
+    refreshBindingViews();
+  }
+
+  function focusBindingControl(action, which) {
+    const row = document.querySelector(`#bindingList .binding-row[data-action="${action}"]`);
+    if (!row || !settingsOpen || !bindingsViewOpen) return;
+    const el = which === "remove"
+      ? row.querySelector(".binding-remove") || row.querySelector(".binding-add")
+      : row.querySelector(".binding-add");
+    if (el) el.focus();
+  }
+
+  function renderBindingList() {
+    const list = document.getElementById("bindingList");
+    if (!list) return;
+    const kind = bindingTab;
+    const padMissing = kind === "pad" && gamepadIndex === null;
+    const info = document.getElementById("bindingPadInfo");
+    if (info) {
+      info.hidden = kind !== "pad";
+      if (padMissing) {
+        info.textContent = "Connect a controller and press any button on it to customise its layout.";
+      } else if (kind === "pad") {
+        info.textContent = `Editing: ${activePadName}` +
+          (padHasCustomProfile() ? " (custom layout)" : " (standard layout)") +
+          (activePadStandard ? "" : " - this controller doesn't report a standard layout, so buttons are shown by number.");
+      }
+    }
+    const resetBtn = document.getElementById("bindingResetBtn");
+    if (resetBtn) {
+      resetBtn.disabled = padMissing;
+      resetBtn.textContent = kind === "key" ? "Reset keyboard to defaults" : "Reset this controller to defaults";
+    }
+    for (const tab of document.querySelectorAll(".binding-tab")) {
+      const selected = tab.dataset.bindingTab === kind;
+      tab.classList.toggle("active", selected);
+      tab.setAttribute("aria-selected", selected ? "true" : "false");
+    }
+
+    list.replaceChildren();
+    if (padMissing) return;
+    const bindings = kind === "key" ? keyBindings : padBindings;
+    const max = kind === "key" ? MAX_KEY_BINDINGS : MAX_PAD_BINDINGS;
+    for (const { id, label, padOnly } of MAPPABLE_ACTIONS) {
+      if (padOnly && kind === "key") continue;
+      const row = document.createElement("div");
+      row.className = "binding-row";
+      row.dataset.action = id;
+
+      const name = document.createElement("span");
+      name.className = "binding-label";
+      name.textContent = label;
+      row.appendChild(name);
+
+      const chips = document.createElement("div");
+      chips.className = "binding-chips";
+      const inputs = bindings[id] || [];
+      if (inputs.length === 0) {
+        const none = document.createElement("span");
+        none.className = "binding-chip unbound";
+        none.textContent = "Unbound";
+        chips.appendChild(none);
+      }
+      for (const input of inputs) {
+        const chip = document.createElement("span");
+        chip.className = "binding-chip";
+        chip.textContent = inputLabel(kind, input);
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "binding-remove";
+        remove.textContent = "\u2715";
+        remove.setAttribute("aria-label", `Remove ${inputLabel(kind, input)} from ${label}`);
+        remove.addEventListener("click", () => removeBinding(kind, id, input));
+        chip.appendChild(remove);
+        chips.appendChild(chip);
+      }
+      row.appendChild(chips);
+
+      const capturing = bindingCapture && bindingCapture.action === id && bindingCapture.kind === kind;
+      const add = document.createElement("button");
+      add.type = "button";
+      add.className = "binding-add" + (capturing ? " capturing" : "");
+      add.textContent = capturing ? (kind === "key" ? "Press a key\u2026" : "Press a button\u2026") : "+ Add";
+      add.disabled = !capturing && inputs.length >= max;
+      add.title = add.disabled ? `Up to ${max} per action - remove one first` : "";
+      add.addEventListener("click", () => {
+        if (capturing) cancelBindingCapture("Cancelled - nothing changed.");
+        else startBindingCapture(kind, id);
+      });
+      row.appendChild(add);
+      list.appendChild(row);
+    }
+  }
+
+  // Help panel text that names a binding: <span data-binding="key:a">.
+  function refreshHelpBindingLabels() {
+    for (const el of document.querySelectorAll("[data-binding]")) {
+      const [kind, action] = el.dataset.binding.split(":");
+      const bindings = kind === "key" ? keyBindings : padBindings;
+      const inputs = bindings[action] || [];
+      if (kind === "key" && action === "reset" && bindingsEqual(inputs, DEFAULT_KEY_BINDINGS.reset)) {
+        el.textContent = "*";
+        continue;
+      }
+      el.textContent = inputs.length
+        ? inputs.map((v) => inputLabel(kind, v)).join(" / ")
+        : "(unbound)";
+    }
+  }
+
+  function refreshBindingSummary() {
+    const el = document.getElementById("bindingsSummary");
+    if (!el) return;
+    const keyCustom = !Object.keys(DEFAULT_KEY_BINDINGS)
+      .every((a) => bindingsEqual(keyBindings[a], DEFAULT_KEY_BINDINGS[a]));
+    const pad = activePadProfile
+      ? `${activePadName} (${padHasCustomProfile() ? "custom" : "standard"})`
+      : "none connected";
+    el.textContent = `Keyboard: ${keyCustom ? "custom" : "default"} \u00b7 Controller: ${pad}`;
+  }
+
+  function refreshBindingViews() {
+    renderBindingList();
+    refreshHelpBindingLabels();
+    refreshBindingSummary();
+  }
+
+  // The bindings editor is a sub-menu inside the settings panel: opening it
+  // swaps the panel's content for the editor, Back / B / Esc swaps it back.
+  let bindingsViewOpen = false;
+  function openBindingsView() {
+    const view = document.getElementById("bindingsView");
+    if (!view) return;
+    bindingsViewOpen = true;
+    view.hidden = false;
+    settingsPanel.classList.add("subview-open");
+    settingsPanel.scrollTop = 0;
+    setBindingStatus("");
+    refreshBindingViews();
+    const back = document.getElementById("bindingsBackBtn");
+    if (back) back.focus();
+  }
+  function closeBindingsView(opts) {
+    if (!bindingsViewOpen) return;
+    if (bindingCapture) cancelBindingCapture();
+    bindingsViewOpen = false;
+    const view = document.getElementById("bindingsView");
+    if (view) view.hidden = true;
+    settingsPanel.classList.remove("subview-open");
+    setBindingStatus("");
+    if (!opts || opts.focus !== false) {
+      const openBtn = document.getElementById("bindingsOpenBtn");
+      if (openBtn) {
+        openBtn.focus();
+        if (openBtn.scrollIntoView) openBtn.scrollIntoView({ block: "center" });
+      }
+    }
+  }
+
+  function bindButtonMapping() {
+    for (const tab of document.querySelectorAll(".binding-tab")) {
+      tab.addEventListener("click", () => {
+        cancelBindingCapture();
+        bindingTab = tab.dataset.bindingTab;
+        setBindingStatus("");
+        renderBindingList();
+      });
+    }
+    const resetBtn = document.getElementById("bindingResetBtn");
+    if (resetBtn) resetBtn.addEventListener("click", resetBindingsForTab);
+    const openBtn = document.getElementById("bindingsOpenBtn");
+    if (openBtn) openBtn.addEventListener("click", openBindingsView);
+    const backBtn = document.getElementById("bindingsBackBtn");
+    if (backBtn) backBtn.addEventListener("click", () => closeBindingsView());
+    const closeBtn = document.getElementById("bindingsCloseBtn");
+    if (closeBtn) closeBtn.addEventListener("click", () => setSettingsOpen(false));
+
+    // Capture phase, so a key pressed while rebinding never reaches the game,
+    // the Konami/debug sequences, or the settings panel's Escape handler.
+    window.addEventListener("keydown", (e) => {
+      if (!bindingCapture) return;
+      if (e.code === "Escape") {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        cancelBindingCapture("Cancelled - nothing changed.");
+        return;
+      }
+      if (bindingCapture.kind !== "key") return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      if (e.repeat || !isValidKeyCode(e.code)) return;
+      finishBindingCapture(e.code);
+    }, true);
+
+    if (navigator.keyboard && navigator.keyboard.getLayoutMap) {
+      navigator.keyboard.getLayoutMap()
+        .then((map) => { keyboardLayoutMap = map; refreshBindingViews(); })
+        .catch(() => {});
+    }
+    refreshBindingViews();
   }
 
   function startAudioAndHideHint() {
@@ -1724,12 +2372,16 @@
       const elements = getFocusableSettingsElements();
       if (elements.length > 0) elements[0].focus();
 
-      if (turboAPhaseOn) {
-        turboAPhaseOn = false;
-        releaseLogical("a");
+      for (const [btn, t] of Object.entries(padTurbo)) {
+        if (t.on) {
+          t.on = false;
+          releaseLogical(btn);
+        }
       }
-    } else if (isVkeyboardOpen()) {
-      closeVirtualKeyboard();
+    } else {
+      if (bindingCapture) cancelBindingCapture("Cancelled - nothing changed.");
+      closeBindingsView({ focus: false });
+      if (isVkeyboardOpen()) closeVirtualKeyboard();
     }
   }
 
@@ -1907,7 +2559,10 @@
       if (!uploading) setSettingsOpen(false);
     });
     window.addEventListener("keydown", (e) => {
-      if (e.key === "Escape" && settingsOpen && !uploading) setSettingsOpen(false);
+      if (e.key === "Escape" && settingsOpen && !uploading) {
+        if (bindingsViewOpen) closeBindingsView();
+        else setSettingsOpen(false);
+      }
     });
   }
 
@@ -1978,7 +2633,8 @@
   function bindKonamiEasterEgg() {
     if (!cheatPanel) return;
     window.addEventListener("keydown", (e) => {
-      feedKonamiBuffer(KEY_MAP[e.code]);
+      if (bindingCapture || e.repeat) return;
+      feedKonamiBuffer(gbButtonForKey(e.code));
     });
   }
 
@@ -2104,11 +2760,7 @@
       if (chatOpen) setChatOpen(false);
       if (helpOpen) setHelpOpen(false);
       if (cheatPanelOpen) setCheatPanelOpen(false);
-      heldKeys.forEach((code) => {
-        const btn = KEY_MAP[code];
-        if (btn) sendInput("release", btn);
-      });
-      heldKeys.clear();
+      releaseAllKeyboardInput();
       if (withFanfare) {
         const banner = document.createElement("div");
         banner.className = "gbd-unlock";
@@ -2127,7 +2779,8 @@
       if (e.repeat) return;
       const tag = document.activeElement && document.activeElement.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
-      feedDebugSequence(KEY_MAP[e.code]);
+      if (bindingCapture) return;
+      feedDebugSequence(gbButtonForKey(e.code));
     });
   }
 
@@ -2169,9 +2822,11 @@
       cheatFocusCol = 0;
       cheatCodesInput.focus();
 
-      if (turboAPhaseOn) {
-        turboAPhaseOn = false;
-        releaseLogical("a");
+      for (const [btn, t] of Object.entries(padTurbo)) {
+        if (t.on) {
+          t.on = false;
+          releaseLogical(btn);
+        }
       }
     }
   }
@@ -2893,6 +3548,7 @@
   loadMuteSetting();
   bindButtons();
   bindKeyboard();
+  bindButtonMapping();
   bindFullscreen();
   bindRomUpload();
   bindBufferSetting();
