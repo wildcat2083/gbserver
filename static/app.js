@@ -1193,6 +1193,8 @@
   let activePadProfile = null;
   let activePadName = "";
   let activePadStandard = true;
+  let activePadFamily = null;          // entry from CONTROLLER_FAMILIES, or null
+  let activePadDefaults = cloneBindings(DEFAULT_PAD_BINDINGS);
   let padBindings = cloneBindings(DEFAULT_PAD_BINDINGS);
 
   function parseControllerVidPid(rawId) {
@@ -1205,21 +1207,100 @@
     if (ids) return ids.vid + ":" + ids.pid;
     return "id:" + (rawId || "unknown").slice(0, 120);
   }
+  // Per-controller-family defaults: what a controller starts with before any
+  // customising, and what "Reset to defaults" returns it to. `bindings`
+  // overrides DEFAULT_PAD_BINDINGS for just the listed actions; `labels`
+  // names the buttons the way they're printed on that controller.
+  const XBOX_BUTTON_LABELS = [
+    "A", "B", "X", "Y", "LB", "RB", "LT", "RT",
+    "View", "Menu", "Left stick click", "Right stick click",
+    "D-pad Up", "D-pad Down", "D-pad Left", "D-pad Right",
+    "Xbox button", "Share",
+  ];
+  const CONTROLLER_FAMILIES = [
+    {
+      id: "xbox",
+      name: "Xbox",
+      // Microsoft's vendor ID, plus Chrome/Firefox on Windows, which report
+      // XInput pads by name only ("Xbox 360 Controller (XInput ...)", "xinput").
+      match: (rawId, ids) => (ids ? ids.vid === "045e" : /xbox|xinput/i.test(rawId || "")),
+      // Xbox puts A at the bottom and B on the right - the reverse of the
+      // Game Boy's B-left / A-right. Swap them so the right-hand face button
+      // is A, as on the real hardware.
+      bindings: { a: [1], b: [0] },
+      note: "A and B swapped to match the Game Boy",
+      labels: XBOX_BUTTON_LABELS,
+      icons: "xbox",
+    },
+    {
+      id: "playstation",
+      name: "PlayStation",
+      match: (rawId, ids) => (ids ? ids.vid === "054c" : /dualsense|dualshock|playstation/i.test(rawId || "")),
+      bindings: {},
+      labels: [
+        "Cross", "Circle", "Square", "Triangle", "L1", "R1", "L2", "R2",
+        "Create / Share", "Options", "L3", "R3",
+        "D-pad Up", "D-pad Down", "D-pad Left", "D-pad Right",
+        "PS button", "Touchpad",
+      ],
+      icons: "playstation",
+    },
+    {
+      id: "nintendo",
+      name: "Nintendo",
+      match: (rawId, ids) => (ids ? ids.vid === "057e" : /pro controller|joy-con|nintendo/i.test(rawId || "")),
+      bindings: {},
+      // Positions in the standard layout, named as printed on a Switch pad
+      // (bottom = B, right = A, left = Y, top = X).
+      labels: [
+        "B", "A", "Y", "X", "L", "R", "ZL", "ZR",
+        "Minus", "Plus", "Left stick click", "Right stick click",
+        "D-pad Up", "D-pad Down", "D-pad Left", "D-pad Right",
+        "Home", "Capture",
+      ],
+      icons: "nintendo",
+    },
+  ];
+
+  function controllerFamilyFor(rawId) {
+    const ids = parseControllerVidPid(rawId);
+    return CONTROLLER_FAMILIES.find((f) => f.match(rawId, ids)) || null;
+  }
+  function padDefaultsFor(family) {
+    const out = cloneBindings(DEFAULT_PAD_BINDINGS);
+    if (!family) return out;
+    for (const [action, inputs] of Object.entries(family.bindings)) {
+      // Take the family's inputs away from whatever had them by default.
+      for (const list of Object.values(out)) {
+        for (const v of inputs) {
+          const i = list.indexOf(v);
+          if (i !== -1) list.splice(i, 1);
+        }
+      }
+      out[action] = inputs.slice();
+    }
+    return out;
+  }
+
   function loadPadBindingsFor(pad) {
     if (!pad) {
       activePadProfile = null;
       activePadName = "";
       activePadStandard = true;
+      activePadFamily = null;
+      activePadDefaults = cloneBindings(DEFAULT_PAD_BINDINGS);
       padBindings = cloneBindings(DEFAULT_PAD_BINDINGS);
       return;
     }
     activePadProfile = controllerProfileKey(pad.id);
     activePadName = resolveControllerName(pad.id || "");
     activePadStandard = pad.mapping === "standard";
+    activePadFamily = controllerFamilyFor(pad.id || "");
+    activePadDefaults = padDefaultsFor(activePadFamily);
     const saved = padProfiles[activePadProfile];
     padBindings = saved
-      ? sanitizeBindings(saved.bindings, DEFAULT_PAD_BINDINGS, isValidPadIndex, MAX_PAD_BINDINGS)
-      : cloneBindings(DEFAULT_PAD_BINDINGS);
+      ? sanitizeBindings(saved.bindings, activePadDefaults, isValidPadIndex, MAX_PAD_BINDINGS)
+      : cloneBindings(activePadDefaults);
   }
   function padHasCustomProfile() {
     return !!(activePadProfile && padProfiles[activePadProfile]);
@@ -1242,8 +1323,8 @@
   }
   function savePadBindings() {
     if (!activePadProfile) return;
-    const isDefault = Object.keys(DEFAULT_PAD_BINDINGS)
-      .every((a) => bindingsEqual(padBindings[a], DEFAULT_PAD_BINDINGS[a]));
+    const isDefault = Object.keys(activePadDefaults)
+      .every((a) => bindingsEqual(padBindings[a], activePadDefaults[a]));
     if (isDefault) delete padProfiles[activePadProfile];
     else padProfiles[activePadProfile] = { name: activePadName, bindings: padBindings };
     writeJsonSetting(PAD_BINDINGS_KEY, Object.keys(padProfiles).length ? { version: 1, pads: padProfiles } : null);
@@ -1964,10 +2045,155 @@
     return code;
   }
   function padButtonLabel(index) {
-    return (activePadStandard && PAD_BUTTON_LABELS[index]) || `Button ${index}`;
+    if (!activePadStandard) return `Button ${index}`;
+    const labels = (activePadFamily && activePadFamily.labels) || PAD_BUTTON_LABELS;
+    return labels[index] || `Button ${index}`;
   }
   function inputLabel(kind, input) {
     return kind === "key" ? keyLabel(input) : padButtonLabel(input);
+  }
+
+  // ---- controller button icons ---------------------------------------------------
+  // Small inline SVGs drawn from basic shapes (no vendor logos). Outlines use
+  // currentColor so they follow the theme; only the Xbox/PlayStation face
+  // buttons carry their familiar colours. Every icon is aria-hidden - the
+  // text label rides along as a tooltip and screen-reader text.
+  const ICON_FONT = "font-family=\"system-ui, -apple-system, 'Segoe UI', sans-serif\" font-weight=\"700\"";
+  // Face button centres in standard-layout order: bottom, right, left, top.
+  const FACE_POSITIONS = [[12, 19], [19, 12], [5, 12], [12, 5]];
+
+  function svgIcon(body, width = 24) {
+    return `<svg class="pad-icon" viewBox="0 0 ${width} 24" width="${width}" height="24" aria-hidden="true" focusable="false">${body}</svg>`;
+  }
+  function iconText(x, str, size, fill = "currentColor") {
+    return `<text x="${x}" y="12.5" ${ICON_FONT} font-size="${size}" fill="${fill}" text-anchor="middle" dominant-baseline="central">${str}</text>`;
+  }
+  // Dark discs get a faint theme-coloured ring so they don't vanish on dark themes.
+  const DISC_RING = `stroke="currentColor" stroke-opacity="0.4" stroke-width="1"`;
+  function letterDisc(letter, fill, textFill = "#fff", ring = false) {
+    return svgIcon(`<circle cx="12" cy="12" r="10.5" fill="${fill}" ${ring ? DISC_RING : ""}/>${iconText(12, letter, 12, textFill)}`);
+  }
+
+  function faceIcon(index, style) {
+    if (style === "xbox") {
+      return letterDisc(["A", "B", "X", "Y"][index], ["#3f9c35", "#d8392b", "#2a6fd6", "#e8b41f"][index], index === 3 ? "#3a2c00" : "#fff");
+    }
+    if (style === "nintendo") return letterDisc(["B", "A", "Y", "X"][index], "#3b3b3b", "#fff", true);
+    if (style === "playstation") {
+      const color = ["#7aa7e8", "#ec6a6a", "#e38fd0", "#4fc3a1"][index];
+      const stroke = `fill="none" stroke="${color}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"`;
+      const shape = [
+        `<path d="M7.8 7.8 16.2 16.2M16.2 7.8 7.8 16.2" ${stroke}/>`,
+        `<circle cx="12" cy="12" r="4.8" ${stroke}/>`,
+        `<rect x="7.6" y="7.6" width="8.8" height="8.8" rx="0.6" ${stroke}/>`,
+        `<path d="M12 6.8 17 15.6H7Z" ${stroke}/>`,
+      ][index];
+      return svgIcon(`<circle cx="12" cy="12" r="10.5" fill="#26262b" ${DISC_RING}/>${shape}`);
+    }
+    // Generic: a diamond of four buttons with this one filled in - correct
+    // for any controller, whatever is printed on it.
+    return svgIcon(FACE_POSITIONS.map(([x, y], i) => i === index
+      ? `<circle cx="${x}" cy="${y}" r="3.6" fill="currentColor"/>`
+      : `<circle cx="${x}" cy="${y}" r="3.1" fill="none" stroke="currentColor" stroke-width="1.4" opacity="0.5"/>`).join(""));
+  }
+
+  function shoulderIcon(index, style) {
+    const names = {
+      xbox: ["LB", "RB", "LT", "RT"],
+      playstation: ["L1", "R1", "L2", "R2"],
+      nintendo: ["L", "R", "ZL", "ZR"],
+    }[style] || ["L1", "R1", "L2", "R2"];
+    const name = names[index - 4];
+    const outline = index < 6
+      ? `<rect x="2" y="6.5" width="28" height="11.5" rx="5.75" fill="none" stroke="currentColor" stroke-width="1.6"/>`
+      : `<path d="M3 20.5V9.5Q3 3.5 9 3.5H23Q29 3.5 29 9.5V20.5Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>`;
+    return svgIcon(outline + iconText(16, name, 9), 32);
+  }
+
+  function pillIcon(label, width) {
+    return svgIcon(`<rect x="1.5" y="6.5" width="${width - 3}" height="11" rx="5.5" fill="none" stroke="currentColor" stroke-width="1.5"/>${iconText(width / 2, label, 6.5)}`, width);
+  }
+
+  function menuButtonIcon(index, style) {
+    if (style === "xbox") {
+      const glyph = index === 8
+        ? `<rect x="7" y="8.5" width="7" height="5.5" rx="1" fill="none" stroke="currentColor" stroke-width="1.4"/><rect x="10" y="11" width="7" height="5.5" rx="1" fill="none" stroke="currentColor" stroke-width="1.4"/>`
+        : `<path d="M7.5 8.5H16.5M7.5 12H16.5M7.5 15.5H16.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>`;
+      return svgIcon(`<circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="1.5"/>${glyph}`);
+    }
+    if (style === "nintendo") {
+      const glyph = index === 8
+        ? `<path d="M7.5 12H16.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>`
+        : `<path d="M7.5 12H16.5M12 7.5V16.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>`;
+      return svgIcon(`<circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="1.5"/>${glyph}`);
+    }
+    if (style === "playstation") return index === 8 ? pillIcon("CREATE", 40) : pillIcon("OPTIONS", 42);
+    return index === 8 ? pillIcon("SELECT", 38) : pillIcon("START", 34);
+  }
+
+  function stickIcon(index, style) {
+    const name = style === "xbox" || style === "nintendo"
+      ? (index === 10 ? "LS" : "RS")
+      : (index === 10 ? "L3" : "R3");
+    return svgIcon(
+      `<circle cx="12" cy="12" r="10.3" fill="none" stroke="currentColor" stroke-width="1.5"/>` +
+      `<circle cx="12" cy="12" r="7" fill="currentColor" opacity="0.14"/>` +
+      iconText(12, name, 8.5));
+  }
+
+  function dpadIcon(index) {
+    const arm = [
+      `<rect x="9" y="2.5" width="6" height="6.5" fill="currentColor"/>`,
+      `<rect x="9" y="15" width="6" height="6.5" fill="currentColor"/>`,
+      `<rect x="2.5" y="9" width="6.5" height="6" fill="currentColor"/>`,
+      `<rect x="15" y="9" width="6.5" height="6" fill="currentColor"/>`,
+    ][index - 12];
+    return svgIcon(`<path d="M9 2.5H15V9H21.5V15H15V21.5H9V15H2.5V9H9Z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>${arm}`);
+  }
+
+  function homeIcon() {
+    return svgIcon(`<circle cx="12" cy="12" r="10.3" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M7.5 12.2 12 8 16.5 12.2V16.5H7.5Z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>`);
+  }
+
+  function extraIcon(style) {
+    if (style === "xbox") {
+      return svgIcon(`<rect x="3" y="5" width="18" height="14" rx="3" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M12 15.5V8.5M9 11.2 12 8.2 15 11.2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>`);
+    }
+    if (style === "nintendo") {
+      return svgIcon(`<rect x="5" y="5" width="14" height="14" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="12" cy="12" r="3.3" fill="currentColor"/>`);
+    }
+    return svgIcon(`<rect x="1.5" y="6" width="27" height="12" rx="3" fill="none" stroke="currentColor" stroke-width="1.5"/>`, 30);
+  }
+
+  function numberedIcon(index) {
+    return svgIcon(`<circle cx="12" cy="12" r="10.3" fill="none" stroke="currentColor" stroke-width="1.5"/>${iconText(12, String(index), index > 9 ? 9 : 11)}`);
+  }
+
+  function padButtonIcon(index) {
+    if (!activePadStandard) return numberedIcon(index);
+    const style = activePadFamily && activePadFamily.icons;
+    if (index <= 3) return faceIcon(index, style);
+    if (index <= 7) return shoulderIcon(index, style);
+    if (index <= 9) return menuButtonIcon(index, style);
+    if (index <= 11) return stickIcon(index, style);
+    if (index <= 15) return dpadIcon(index);
+    if (index === 16) return homeIcon();
+    if (index === 17) return extraIcon(style);
+    return numberedIcon(index);
+  }
+
+  // A controller button as an icon with its name as tooltip / screen-reader text.
+  function padButtonElement(index) {
+    const wrap = document.createElement("span");
+    wrap.className = "pad-glyph";
+    const label = padButtonLabel(index);
+    wrap.title = label;
+    wrap.innerHTML = padButtonIcon(index);
+    const sr = document.createElement("span");
+    sr.className = "visually-hidden";
+    sr.textContent = label;
+    wrap.appendChild(sr);
+    return wrap;
   }
 
   let bindingTab = "key";
@@ -2081,9 +2307,9 @@
       saveKeyBindings();
       setBindingStatus("Keyboard reset to the default layout.");
     } else if (activePadProfile) {
-      padBindings = cloneBindings(DEFAULT_PAD_BINDINGS);
+      padBindings = cloneBindings(activePadDefaults);
       savePadBindings();
-      setBindingStatus(`${activePadName} reset to the standard layout.`);
+      setBindingStatus(`${activePadName} reset to its default layout.`);
     }
     refreshBindingViews();
   }
@@ -2109,7 +2335,11 @@
         info.textContent = "Connect a controller and press any button on it to customise its layout.";
       } else if (kind === "pad") {
         info.textContent = `Editing: ${activePadName}` +
-          (padHasCustomProfile() ? " (custom layout)" : " (standard layout)") +
+          (padHasCustomProfile()
+            ? " (custom layout)"
+            : activePadFamily && activePadFamily.note
+              ? ` (${activePadFamily.name} default layout - ${activePadFamily.note})`
+              : " (standard layout)") +
           (activePadStandard ? "" : " - this controller doesn't report a standard layout, so buttons are shown by number.");
       }
     }
@@ -2150,8 +2380,9 @@
       }
       for (const input of inputs) {
         const chip = document.createElement("span");
-        chip.className = "binding-chip";
-        chip.textContent = inputLabel(kind, input);
+        chip.className = "binding-chip" + (kind === "pad" ? " pad" : "");
+        if (kind === "pad") chip.appendChild(padButtonElement(input));
+        else chip.textContent = inputLabel(kind, input);
         const remove = document.createElement("button");
         remove.type = "button";
         remove.className = "binding-remove";
@@ -2189,9 +2420,17 @@
         el.textContent = "*";
         continue;
       }
-      el.textContent = inputs.length
-        ? inputs.map((v) => inputLabel(kind, v)).join(" / ")
-        : "(unbound)";
+      if (!inputs.length) {
+        el.textContent = "(unbound)";
+      } else if (kind === "pad") {
+        el.replaceChildren();
+        inputs.forEach((v, i) => {
+          if (i) el.appendChild(document.createTextNode(" / "));
+          el.appendChild(padButtonElement(v));
+        });
+      } else {
+        el.textContent = inputs.map((v) => inputLabel(kind, v)).join(" / ");
+      }
     }
   }
 
@@ -2201,7 +2440,7 @@
     const keyCustom = !Object.keys(DEFAULT_KEY_BINDINGS)
       .every((a) => bindingsEqual(keyBindings[a], DEFAULT_KEY_BINDINGS[a]));
     const pad = activePadProfile
-      ? `${activePadName} (${padHasCustomProfile() ? "custom" : "standard"})`
+      ? `${activePadName} (${padHasCustomProfile() ? "custom" : "default"})`
       : "none connected";
     el.textContent = `Keyboard: ${keyCustom ? "custom" : "default"} \u00b7 Controller: ${pad}`;
   }
