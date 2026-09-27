@@ -279,9 +279,16 @@ class Emulator:
         self.last_activity = time.time()
 
     def list_roms(self):
-        return sorted(
-            p.name for p in list(ROMS_DIR.glob("*.gb")) + list(ROMS_DIR.glob("*.gbc"))
-        )
+        # Match the extension case-insensitively, the same way uploads are
+        # validated - glob("*.gb") is case-sensitive on Linux, so "GAME.GB"
+        # uploaded fine but never appeared in the library.
+        try:
+            return sorted(
+                p.name for p in ROMS_DIR.iterdir()
+                if p.is_file() and p.suffix.lower() in (".gb", ".gbc")
+            )
+        except OSError:
+            return []
 
     @staticmethod
     def save_locations_index():
@@ -406,10 +413,42 @@ class Emulator:
                     f"name matches the ROM's filename."
                 )
 
+        # Never let an upload that won't load replace a save that does: write
+        # it beside the real one, swap it in, and swap the original back (and
+        # resume from it) if the emulator rejects the upload.
         save_path = self._save_path_for(ROMS_DIR / rom_name)
-        file_storage.save(save_path)
-        save_load_error = self.load_rom(rom_name)
+        tmp_path = save_path.with_name(save_path.name + ".uploading")
+        backup_path = save_path.with_name(save_path.name + ".previous")
+        file_storage.save(tmp_path)
+        had_previous = save_path.exists()
+        if had_previous:
+            save_path.replace(backup_path)
+        tmp_path.replace(save_path)
+        try:
+            save_load_error = self.load_rom(rom_name)
+        except Exception:
+            self._restore_previous_save(save_path, backup_path, had_previous)
+            raise
+        if save_load_error:
+            self._restore_previous_save(save_path, backup_path, had_previous)
+            try:
+                # Same ROM, so the worker stops the fresh game without saving it.
+                self.load_rom(rom_name, load_save=had_previous)
+            except Exception as e:
+                print(f"[warn] couldn't resume the previous save after a bad upload: {e}")
+        elif backup_path.exists():
+            backup_path.unlink()
         return rom_name, save_load_error
+
+    @staticmethod
+    def _restore_previous_save(save_path, backup_path, had_previous):
+        try:
+            if had_previous:
+                backup_path.replace(save_path)
+            elif save_path.exists():
+                save_path.unlink()
+        except OSError as e:
+            print(f"[warn] couldn't restore the previous save {save_path.name}: {e}")
 
     def convert_sav(self, file_storage):
         rom_name = self._current_rom_name
@@ -782,10 +821,12 @@ class Emulator:
             return
         recent.append(now)
 
+        if not isinstance(text, str):
+            return
         text = text.strip()[:200]
         if not text:
             return
-        name = (name or "").strip()[:24]
+        name = name.strip()[:24] if isinstance(name, str) else ""
         role = "controller" if self.is_controller(ws) else "viewer"
         entry = {"role": role, "name": name, "text": text, "ts": time.time()}
         self.chat_history.append(entry)

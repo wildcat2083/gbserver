@@ -17,12 +17,13 @@ from config import (
     SHARED_DISABLED_CLOSE_CODE,
     SOUND_SAMPLE_RATE,
     debugger_allowed_for_host,
+    safe_client_id,
     safe_rom_name,
     safe_rom_path,
 )
 from emulator import Emulator
 from engine_config import BOYTACEAN_AVAILABLE, get_engine_for_rom, set_engine_for_rom
-from rooms import controller_check, create_room, default_emu, get_emulator, get_emulator_or_404, rooms, rooms_lock, shared_game_state
+from rooms import controller_check, json_body, create_room, default_emu, get_emulator, get_emulator_or_404, rooms, rooms_lock, shared_game_state
 
 
 @app.route("/")
@@ -96,7 +97,7 @@ def api_audio_batch(room_code=None):
         denied = controller_check(emu)
         if denied:
             return denied
-        data = request.get_json(force=True)
+        data = json_body()
         ticks = data.get("ticks")
         if not isinstance(ticks, int) or not (1 <= ticks <= 20):
             return jsonify({"error": "ticks must be an integer from 1-20"}), 400
@@ -113,7 +114,7 @@ def api_fast_forward(room_code=None):
         denied = controller_check(emu)
         if denied:
             return denied
-        data = request.get_json(force=True)
+        data = json_body()
         enabled = data.get("enabled")
         if not isinstance(enabled, bool):
             return jsonify({"error": "enabled must be true or false"}), 400
@@ -155,7 +156,7 @@ def api_play(room_code=None):
     denied = controller_check(emu)
     if denied:
         return denied
-    data = request.get_json(force=True)
+    data = json_body()
     filename = data.get("filename")
     if not filename:
         return jsonify({"error": "filename required"}), 400
@@ -207,6 +208,8 @@ def api_reset(room_code=None):
 
 
 def _parse_gameshark_code(code_str):
+    if not isinstance(code_str, str):
+        raise ValueError("each cheat code must be a string")
     original = code_str
     code_str = code_str.strip().upper()
     if len(code_str) != 8 or not all(c in "0123456789ABCDEF" for c in code_str):
@@ -228,7 +231,7 @@ def api_cheats(room_code=None):
     denied = controller_check(emu)
     if denied:
         return denied
-    data = request.get_json(force=True) or {}
+    data = json_body()
     raw_codes = data.get("codes", [])
     if not isinstance(raw_codes, list):
         return jsonify({"error": "codes must be a list of code strings"}), 400
@@ -252,7 +255,7 @@ def api_rtc(room_code=None):
         denied = controller_check(emu)
         if denied:
             return denied
-        data = request.get_json(force=True) or {}
+        data = json_body()
         values = {}
         if data.get("now"):
             values["now"] = True
@@ -299,7 +302,7 @@ def api_rom_engine(filename, room_code=None):
         denied = controller_check(emu)
         if denied:
             return denied
-        data = request.get_json(force=True)
+        data = json_body()
         engine = data.get("engine")
         try:
             set_engine_for_rom(filename, engine)
@@ -448,7 +451,10 @@ def ws_handler(ws, room_code=None):
         except Exception:
             pass
         return
-    client_id = request.args.get("client_id", "")
+    # An ID that doesn't look like one the player makes is dropped: the client
+    # can still watch, but it can't act as controller over the HTTP API, and
+    # nothing it chose ends up on the admin dashboard.
+    client_id = safe_client_id(request.args.get("client_id", ""))
     debugger_allowed = debugger_allowed_for_host(request.host)
     emu.add_client(ws, client_id, remote_addr=request.remote_addr)
     try:

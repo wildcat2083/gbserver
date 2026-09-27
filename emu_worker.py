@@ -1,4 +1,5 @@
 from pathlib import Path
+import os
 import math
 import signal
 import queue
@@ -15,10 +16,32 @@ MSG_AUDIO = b"\x02"
 
 def run_worker(cmd_queue, out_queue, roms_dir, saves_dir, sound_sample_rate,
                 sound_volume, audio_batch_ticks, autosave_interval_minutes, fast_forward_speed):
+    # Undo whatever handlers were inherited from the server process, then make
+    # SIGTERM/SIGINT a *graceful* stop. `systemctl stop/restart` signals every
+    # process in the service at once; dying on the spot here would throw away
+    # everything since the last autosave (up to AUTOSAVE_INTERVAL_MINUTES).
+    # Instead the main loop notices the flag, saves, and exits.
+    stop_signal = {"received": False}
+
+    def _graceful_stop(signum, frame):
+        stop_signal["received"] = True
+        try:
+            # Release a breakpoint hold, and make any further breakpoint in
+            # this frame fall straight through (the hook skips holding while a
+            # deferred command is waiting).
+            dbg.deferred.append({"cmd": "shutdown"})
+            dbg.holding = False
+        except NameError:
+            pass
+
     for name in ("SIGTERM", "SIGINT", "SIGQUIT"):
         sig = getattr(signal, name, None)
         if sig is not None:
             signal.signal(sig, signal.SIG_DFL)
+    for name in ("SIGTERM", "SIGINT"):
+        sig = getattr(signal, name, None)
+        if sig is not None:
+            signal.signal(sig, _graceful_stop)
 
     from pyboy import PyBoy
     try:
@@ -127,28 +150,35 @@ def run_worker(cmd_queue, out_queue, roms_dir, saves_dir, sound_sample_rate,
         except Exception:
             return False
 
-    def _rtc_registers(pyboy_eng):
-        """Read the battery clock through the game's own MBC3 register
-        protocol, which PyBoy routes to its internal RTC.
+    # The battery clock is read from a save-state snapshot, never through the
+    # cartridge's own registers: selecting an RTC register means writing to
+    # the MBC, which leaves the game's SRAM bank switched to the clock (and
+    # RAM enabled, and the clock latched) behind its back. A game in the middle
+    # of reading or writing SRAM - e.g. saving - would then read and write the
+    # clock instead of its save data. Values match PyBoy's own latch:
+    # elapsed = now - timezero (PyBoy doesn't implement halting the clock).
 
-        Works on the compiled PyBoy wheel where `mb`/`cartridge.rtc` are
-        hidden. Runs between ticks, so the game's own register writes cannot
-        interfere mid-sequence.
-        """
-        if pyboy_eng is None:
-            return None
-        m = pyboy_eng.memory
-        m[0x0000] = 0x0A  # enable cartridge RAM / RTC access
-        m[0x6000] = 0x00  # latch: arm
-        m[0x6000] = 0x01  # latch: freeze current clock into the registers
-        vals = {}
-        for reg, name in (
-            (0x08, "sec"), (0x09, "min"), (0x0A, "hour"),
-            (0x0B, "day_low"), (0x0C, "day_high"),
-        ):
-            m[0x4000] = reg  # select RTC register
-            vals[name] = m[0xA000]
-        return vals
+    def _snapshot_state():
+        buf = io.BytesIO()
+        with dbg.breakpoints_removed():
+            pyboy.save_state(buf)
+        return buf.getvalue()
+
+    def _rtc_blob_from_state(state_bytes):
+        off = _state_rtc_offset(state_bytes)
+        return None if off is None else bytes(state_bytes[off:off + 10])
+
+    def _write_atomic(path, data):
+        # A kill or power cut mid-write leaves the previous file, not half of one.
+        tmp = path.with_name(path.name + ".tmp")
+        with open(tmp, "wb") as f:
+            f.write(data)
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except OSError:
+                pass
+        os.replace(tmp, path)
 
     def new_rtc_io(stem):
         path = saves_dir / (stem + ".rtc")
@@ -164,25 +194,20 @@ def run_worker(cmd_queue, out_queue, roms_dir, saves_dir, sound_sample_rate,
             data = struct.pack("d", time.time()) + b"\x00\x00"
         return io.BytesIO(data)
 
-    def flush_rtc():
+    def flush_rtc(state_bytes=None):
         nonlocal rtc_io
-        if pyboy is None or rom_path is None or not rtc_has_rtc:
+        if pyboy is None or rom_path is None or not rtc_has_rtc or engine_name != "pyboy":
             return
         try:
-            regs = _rtc_registers(pyboy)
+            blob = _rtc_blob_from_state(state_bytes if state_bytes is not None else _snapshot_state())
         except Exception as e:
             print(f"[worker] could not read rtc for flush: {e}")
             return
-        dhi = regs["day_high"]
-        if (dhi >> 6) & 1 or (dhi >> 7) & 1:
-            # halted clock or pending day-counter carry: cannot reconstruct
-            # timezero from the displayed register values.
+        if blob is None:
+            print("[worker] could not locate the RTC block in the save state - .rtc not updated")
             return
-        day = ((dhi & 0b1) << 8) | regs["day_low"]
-        total = day * 86400 + regs["hour"] * 3600 + regs["min"] * 60 + regs["sec"]
-        blob = struct.pack("d", time.time() - total) + b"\x00\x00"
         rtc_io = io.BytesIO(blob)
-        (saves_dir / (rom_path.stem + ".rtc")).write_bytes(blob)
+        _write_atomic(saves_dir / (rom_path.stem + ".rtc"), blob)
 
     def rtc_readable():
         return rtc_has_rtc
@@ -193,16 +218,20 @@ def run_worker(cmd_queue, out_queue, roms_dir, saves_dir, sound_sample_rate,
             base["rtc"] = False
             return base
         try:
-            regs = _rtc_registers(pyboy)
-            dhi = regs["day_high"]
+            blob = _rtc_blob_from_state(_snapshot_state())
+            if blob is None:
+                raise ValueError("could not locate the RTC block in the emulator state")
+            timezero = struct.unpack("d", blob[:8])[0]
+            elapsed = max(0.0, time.time() - timezero)
+            days = int(elapsed // 86400)
             base.update({
                 "rtc": True,
-                "sec": regs["sec"],
-                "min": regs["min"],
-                "hour": regs["hour"],
-                "day": ((dhi & 0b1) << 8) | regs["day_low"],
-                "halt": (dhi >> 6) & 1,
-                "day_carry": (dhi >> 7) & 1,
+                "sec": int(elapsed % 60),
+                "min": int((elapsed // 60) % 60),
+                "hour": int((elapsed // 3600) % 24),
+                "day": days & 0x1FF,
+                "halt": blob[8] & 1,
+                "day_carry": 1 if (blob[9] & 1 or days > 0x1FF) else 0,
             })
         except Exception as e:
             base["rtc"] = True
@@ -291,9 +320,7 @@ def run_worker(cmd_queue, out_queue, roms_dir, saves_dir, sound_sample_rate,
         if pyboy is not None and rom_path is not None:
             if autosave:
                 try:
-                    save_path = saves_dir / (rom_path.stem + ".state")
-                    with dbg.breakpoints_removed(), open(save_path, "wb") as f:
-                        pyboy.save_state(f)
+                    _write_atomic(saves_dir / (rom_path.stem + ".state"), _snapshot_state())
                 except Exception as e:
                     print(f"[worker] could not save state on stop: {e}")
             try:
@@ -303,7 +330,7 @@ def run_worker(cmd_queue, out_queue, roms_dir, saves_dir, sound_sample_rate,
                         # engine into the .rtc blob; it never touches roms/.
                         out = io.BytesIO()
                         pyboy.stop(save=True, ram_file=io.BytesIO(), rtc_file=out)
-                        (saves_dir / (rom_path.stem + ".rtc")).write_bytes(out.getvalue())
+                        _write_atomic(saves_dir / (rom_path.stem + ".rtc"), out.getvalue())
                     else:
                         pyboy.stop(save=False)
                 else:
@@ -413,10 +440,9 @@ def run_worker(cmd_queue, out_queue, roms_dir, saves_dir, sound_sample_rate,
     def do_save_now():
         if pyboy is None or rom_path is None:
             raise ValueError("no ROM is currently loaded")
-        save_path = saves_dir / (rom_path.stem + ".state")
-        with dbg.breakpoints_removed(), open(save_path, "wb") as f:
-            pyboy.save_state(f)
-        flush_rtc()
+        state = _snapshot_state()
+        _write_atomic(saves_dir / (rom_path.stem + ".state"), state)
+        flush_rtc(state)
 
     def do_extract_sav():
         nonlocal pyboy, rtc_io, rtc_has_rtc
@@ -618,6 +644,9 @@ def run_worker(cmd_queue, out_queue, roms_dir, saves_dir, sound_sample_rate,
     running_worker = True
     while running_worker:
       try:
+        if stop_signal["received"]:
+            print("[worker] stop signal received - saving and exiting", flush=True)
+            break
         # If the server process died without shutting us down (killed, crashed),
         # save and exit instead of running on as an orphan.
         now_check = time.monotonic()

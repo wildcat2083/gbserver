@@ -1,4 +1,5 @@
 import os
+import re
 import threading
 from pathlib import Path
 
@@ -100,6 +101,18 @@ def safe_rom_name(filename):
     if Path(name).suffix.lower() not in ROM_EXTENSIONS:
         raise ValueError("only .gb / .gbc files are supported")
     return name
+
+
+# Client IDs come from the browser (crypto.randomUUID() or a "cid-..." fallback)
+# and are shown on the admin dashboard, so anything else is refused outright.
+_CLIENT_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
+
+
+def safe_client_id(value):
+    """The client ID if it looks like one the player generates, else ""."""
+    if isinstance(value, str) and _CLIENT_ID_RE.fullmatch(value):
+        return value
+    return ""
 
 
 def safe_rom_path(filename):

@@ -13,7 +13,7 @@ from app import app, limiter
 from config import DATA_DIR, MAX_ROOMS, OFFLINE_CLOSE_CODE, OFFLINE_FLAG_PATH, safe_rom_name, safe_rom_path
 from engine_config import BOYTACEAN_AVAILABLE
 from metrics import system_metrics
-from rooms import default_emu, get_emulator, rooms, rooms_lock, create_room, shared_game_state
+from rooms import json_body, default_emu, get_emulator, rooms, rooms_lock, create_room, shared_game_state
 
 _INSECURE_ADMIN_TOKENS = {"", "changeme", "change-me", "changeme123", "admin", "password"}
 MIN_ADMIN_TOKEN_LENGTH = 32
@@ -136,6 +136,10 @@ def _set_offline(offline):
 
 
 OFFLINE_ALLOW_PREFIXES = (
+    # /api/config stays up so health checks (the Windows launcher's update
+    # check, deploy.sh) can tell "offline on purpose" from "broken" - without
+    # it, restarting while offline made the launcher mark a good version bad.
+    "/api/config",
     "/dashboard",
     "/api/dashboard/stats",
     "/api/admin/",
@@ -229,7 +233,7 @@ def api_dashboard_stats():
 def api_admin_toggle_shared_game():
     if not _is_admin_request():
         return jsonify({"error": "not authorized"}), 403
-    data = request.get_json(force=True) or {}
+    data = json_body()
     enabled = data.get("enabled")
     if not isinstance(enabled, bool):
         return jsonify({"error": "enabled must be true or false"}), 400
@@ -272,7 +276,7 @@ def api_admin_online():
 def api_admin_kick():
     if not _is_admin_request():
         return jsonify({"error": "not authorized"}), 403
-    data = request.get_json(force=True) or {}
+    data = json_body()
     client_id = data.get("client_id")
     room_code = data.get("room")
     if not client_id:
@@ -292,7 +296,7 @@ def api_admin_kick():
 def api_admin_redirect():
     if not _is_admin_request():
         return jsonify({"error": "not authorized"}), 403
-    data = request.get_json(force=True) or {}
+    data = json_body()
     client_id = data.get("client_id")
     room_code = data.get("room")
     if not client_id:
@@ -328,8 +332,9 @@ def api_admin_redirect():
 def api_admin_block_ip():
     if not _is_admin_request():
         return jsonify({"error": "not authorized"}), 403
-    data = request.get_json(force=True) or {}
-    ip = (data.get("ip") or "").strip()
+    data = json_body()
+    ip = data.get("ip")
+    ip = ip.strip() if isinstance(ip, str) else ""
     if not ip:
         return jsonify({"error": "ip is required"}), 400
     if ip == request.remote_addr:
@@ -346,8 +351,9 @@ def api_admin_block_ip():
 def api_admin_unblock_ip():
     if not _is_admin_request():
         return jsonify({"error": "not authorized"}), 403
-    data = request.get_json(force=True) or {}
-    ip = (data.get("ip") or "").strip()
+    data = json_body()
+    ip = data.get("ip")
+    ip = ip.strip() if isinstance(ip, str) else ""
     if not ip:
         return jsonify({"error": "ip is required"}), 400
     blocked_ips.discard(ip)

@@ -12,6 +12,7 @@ from config import (
     ROOM_IDLE_TIMEOUT_SECONDS,
     ROOM_SAVES_DIR,
     SAVES_DIR,
+    safe_client_id,
 )
 from emulator import Emulator
 
@@ -50,8 +51,18 @@ def get_emulator_or_404(room_code):
     return emu
 
 
+def json_body():
+    """The request's JSON body if it's an object, else {} (null, a list, a number...).
+
+    Malformed JSON still gets Flask's 400, so a garbled request can't be
+    mistaken for an empty one (e.g. clearing every cheat).
+    """
+    data = request.get_json(force=True)
+    return data if isinstance(data, dict) else {}
+
+
 def controller_check(emu):
-    client_id = request.headers.get("X-Client-Id", "")
+    client_id = safe_client_id(request.headers.get("X-Client-Id", ""))
     if not emu.is_controller_client(client_id):
         return jsonify({"error": "Only the current controller can do that."}), 403
     return None
@@ -61,13 +72,16 @@ def _reap_idle_rooms():
     while True:
         time.sleep(60)
         now = time.time()
+        # Only unlist the rooms while holding the lock - shutting a worker down
+        # can take several seconds, and every room request needs this lock.
         with rooms_lock:
             stale = [
                 code for code, e in rooms.items()
                 if not e.clients and (now - e.last_activity) > ROOM_IDLE_TIMEOUT_SECONDS
             ]
-            for code in stale:
-                e = rooms.pop(code)
+            reaped = [(code, rooms.pop(code)) for code in stale]
+        if reaped:
+            for code, e in reaped:
                 try:
                     e.shutdown()
 

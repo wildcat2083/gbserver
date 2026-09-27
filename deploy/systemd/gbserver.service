@@ -23,6 +23,8 @@ WorkingDirectory=/home/luna/gbserver
 ExecStart=/home/luna/gbserver/venv/bin/gunicorn -c gunicorn.conf.py app:app
 Restart=on-failure
 RestartSec=3
+# Emulator workers save their game when stopped; give them time to finish.
+TimeoutStopSec=30
 
 # PyBoy/SDL2 doesn't need a real display since we run window="null",
 # but some environments still expect these to be set harmlessly.

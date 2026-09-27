@@ -272,8 +272,8 @@
 
     function renderSharedOrRoom(row) {
       return `
-        <td>${row.current_rom || "<em>none loaded</em>"}</td>
-        <td>${row.engine}</td>
+        <td>${row.current_rom ? escapeHtml(row.current_rom) : "<em>none loaded</em>"}</td>
+        <td>${escapeHtml(row.engine)}</td>
         <td>${pill(row.fast_forward, "ON", "off")}</td>
         <td>${row.total_clients}</td>
         <td>${row.viewer_count}</td>
@@ -476,8 +476,8 @@
           roomsEmpty.hidden = true;
           roomsBody.innerHTML = data.rooms.map((r) => `
             <tr>
-              <td>${r.label}</td>
-              ${isAdmin ? `<td><code>${r.code || ""}</code></td>` : ""}
+              <td>${escapeHtml(r.label)}</td>
+              ${isAdmin ? `<td><code>${escapeHtml(r.code || "")}</code></td>` : ""}
               ${renderSharedOrRoom(r)}
               <td>${r.idle_seconds}s</td>
             </tr>
@@ -525,12 +525,12 @@
       clientsTable.hidden = false;
       document.getElementById("clientsBody").innerHTML = rows.map((row) => `
         <tr>
-          <td>${row.session}</td>
-          <td><code>${row.client_id}</code></td>
-          <td><code>${row.remote_addr || "unknown"}</code></td>
+          <td>${escapeHtml(row.session)}</td>
+          <td><code>${escapeHtml(row.client_id)}</code></td>
+          <td><code>${escapeHtml(row.remote_addr || "unknown")}</code></td>
           <td>${pill(row.role === "controller", "Controller", "Viewer")}</td>
-          <td><button class="kick-btn" data-room="${row.room || ""}" data-client-id="${row.client_id}" data-action="kick">Kick</button>
-          <button class="kick-btn" data-room="${row.room || ""}" data-client-id="${row.client_id}" data-action="redirect">Move to room</button></td>
+          <td><button class="kick-btn" data-room="${escapeHtml(row.room || "")}" data-client-id="${escapeHtml(row.client_id)}" data-action="kick">Kick</button>
+          <button class="kick-btn" data-room="${escapeHtml(row.room || "")}" data-client-id="${escapeHtml(row.client_id)}" data-action="redirect">Move to room</button></td>
         </tr>
       `).join("");
     }
@@ -561,21 +561,22 @@
       const statusLabels = { ok: "OK", warning: "Renew soon", critical: "Renew now", error: "Error" };
       document.getElementById("certificatesBody").innerHTML = certs.map((cert) => {
         const statusText = statusLabels[cert.status] || cert.status;
-        const pillHtml = `<span class="pill ${cert.status}">${statusText}</span>`;
+        const statusClass = ["ok", "warning", "critical", "error"].includes(cert.status) ? cert.status : "error";
+        const pillHtml = `<span class="pill ${statusClass}">${escapeHtml(statusText)}</span>`;
         if (cert.error) {
           return `
             <tr>
-              <td>${cert.label}</td>
-              <td colspan="2">Couldn't read this certificate &mdash; <span style="color: #f0a3ac;">${cert.error}</span></td>
+              <td>${escapeHtml(cert.label)}</td>
+              <td colspan="2">Couldn't read this certificate &mdash; <span style="color: #f0a3ac;">${escapeHtml(cert.error)}</span></td>
               <td>${pillHtml}</td>
             </tr>
           `;
         }
         return `
           <tr>
-            <td>${cert.label}</td>
-            <td>${cert.expires}</td>
-            <td>${cert.days_remaining}</td>
+            <td>${escapeHtml(cert.label)}</td>
+            <td>${escapeHtml(cert.expires)}</td>
+            <td>${escapeHtml(cert.days_remaining)}</td>
             <td>${pillHtml}</td>
           </tr>
         `;
@@ -596,8 +597,8 @@
       table.hidden = false;
       document.getElementById("blockedIpsBody").innerHTML = ips.map((ip) => `
         <tr>
-          <td><code>${ip}</code></td>
-          <td><button class="kick-btn" data-ip="${ip}">Unblock</button></td>
+          <td><code>${escapeHtml(ip)}</code></td>
+          <td><button class="kick-btn" data-ip="${escapeHtml(ip)}">Unblock</button></td>
         </tr>
       `).join("");
     }
@@ -863,8 +864,8 @@
         document.getElementById("actionLogBody").innerHTML = entries.map((e) => `
           <tr>
             <td>${new Date(e.ts * 1000).toLocaleTimeString()}</td>
-            <td>${e.action}</td>
-            <td>${e.detail || ""}</td>
+            <td>${escapeHtml(e.action)}</td>
+            <td>${escapeHtml(e.detail || "")}</td>
           </tr>
         `).join("");
       } catch (err) {
